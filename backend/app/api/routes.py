@@ -72,7 +72,8 @@ def list_medicines(
                 g.dosage_description,
                 g.interaction_description,
                 g.side_effects_description,
-                g.pregnancy_and_lactation_description
+                g.pregnancy_and_lactation_description,
+                b.beginner_summary
             FROM brands b
             LEFT JOIN generics g ON b.generic_lower = g.generic_lower
             {where_sql}

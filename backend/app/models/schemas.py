@@ -16,6 +16,7 @@ class MedicineItem(BaseModel):
     interaction_description: Optional[str] = None
     side_effects_description: Optional[str] = None
     pregnancy_and_lactation_description: Optional[str] = None
+    beginner_summary: Optional[str] = None
 
 
 class DatabaseStats(BaseModel):
