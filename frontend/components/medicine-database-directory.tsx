@@ -104,8 +104,8 @@ export function MedicineDatabaseDirectory() {
   const [total, setTotal] = useState(21712);
   const [totalPages, setTotalPages] = useState(1);
   const [stats, setStats] = useState({
-    totalBrands: 21712,
-    totalGenerics: 1661,
+    totalBrands: 17191 ,
+    totalGenerics: 1661 ,
   });
   const [isLoading, setIsLoading] = useState(true);
   const [savedBrands, setSavedBrands] = useState<Record<number, boolean>>({});
@@ -188,7 +188,7 @@ export function MedicineDatabaseDirectory() {
               type="text"
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
-              placeholder="Search 21,712+ BD medicines (Napa, Ace, Seclo, Paracetamol, Square)..."
+              placeholder="Search 17,191 + BD medicines (Napa, Ace, Seclo, Paracetamol, Square)..."
               className="w-full bg-transparent text-xs sm:text-sm font-medium text-[#09353c] placeholder:text-[#46737a]/70 focus:outline-none"
             />
             {searchInput && (
