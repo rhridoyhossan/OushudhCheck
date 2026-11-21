@@ -69,7 +69,11 @@ import sys, json, math, sqlite3
 from pathlib import Path
 
 db_path = Path(sys.argv[1])
-q_clean = sys.argv[2].strip().lower()
+import re as _re
+q_raw = sys.argv[2].strip().lower()
+q_stripped = _re.sub(r"\\b\\d+(?:\\.\\d+)?\\s*(?:mg|mcg|g|ml|iu|m)?\\b", " ", q_raw, flags=_re.IGNORECASE)
+q_stripped = _re.sub(r"[*]+", " ", q_stripped)
+q_clean = " ".join(q_stripped.split()).strip() or q_raw
 form_clean = sys.argv[3].strip()
 page = int(sys.argv[4])
 limit = int(sys.argv[5])
@@ -139,8 +143,24 @@ stats = cur.execute(
 
 conn.close()
 
+items_out = []
+for r in rows:
+    d = dict(r)
+    b_name = d.get("brand_name") or ""
+    gen = d.get("generic") or ""
+    form = d.get("dosage_form") or "Tablet"
+    mfg = d.get("manufacturer") or ""
+    ind = d.get("indication") or "সংশ্লিষ্ট রোগের উপসর্গ"
+    pack = d.get("package_container") or ""
+    d["beginner_summary"] = (
+        f"{b_name}{f' ({pack})' if pack else ''} হলো একটি {form}{f' ({mfg})' if mfg else ''}, যার মূল সক্রিয় উপাদান {gen}। "
+        f"এটি মূলত {ind} নিরাময় ও নিয়ন্ত্রণে ব্যবহৃত হয়। প্রতিদিন চিকিৎসকের নির্ধারিত মাত্রায় খাবারের পরে সেবন করুন। "
+        f"সতর্কতা: একই জেনেরিক উপাদানের ({gen}) একাধিক ব্র্যান্ডের ওষুধ একসাথে খাবেন না।"
+    )
+    items_out.append(d)
+
 print(json.dumps({
-    "items": [dict(r) for r in rows],
+    "items": items_out,
     "total": int(total),
     "page": page,
     "limit": limit,

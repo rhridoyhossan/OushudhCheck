@@ -1,9 +1,27 @@
+export interface MedicineDatabaseRecord {
+  brand_id: number;
+  brand_name: string;
+  type: string | null;
+  dosage_form: string | null;
+  generic: string;
+  manufacturer: string | null;
+  package_container: string | null;
+  drug_class: string | null;
+  indication: string | null;
+  dosage_description: string | null;
+  interaction_description: string | null;
+  side_effects_description: string | null;
+  pregnancy_and_lactation_description: string | null;
+  beginner_summary?: string | null;
+}
+
 export interface BoundingBox {
   id: string;
   label: string;
   brandName: string;
   genericName: string;
   strength: string;
+  dosageForm?: string;
   manufacturer: string;
   confidence: number;
   // Normalized coordinates (0-100 percentage)
@@ -16,6 +34,7 @@ export interface BoundingBox {
   dosageBangla: string;
   dosageEnglish: string;
   timingTag: string;
+  databaseRecord?: MedicineDatabaseRecord;
 }
 
 export interface SafetyAlert {
@@ -29,6 +48,72 @@ export interface SafetyAlert {
   involvedBrands: string[];
   genericCompound: string;
   clinicalRisk: string;
+}
+
+export interface TransparencyStageTiming {
+  id: string;
+  label: string;
+  engine: string;
+  durationMs: number;
+  color: string;
+}
+
+export interface TransparencyEvidenceItem {
+  id: string;
+  stripIndex: number;
+  brandName: string;
+  genericName: string;
+  strength: string;
+  dosageForm: string;
+  manufacturer: string;
+  statusBadge: "Safe" | "Caution" | "Danger";
+  rawOcrText: string;
+  ocrLinesCount: number;
+  fuzzyMatchScore: number;
+  matchMethod: string;
+  confidencePct: number;
+  bboxCoords: {
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
+    imgWidth: number;
+    imgHeight: number;
+  };
+  cropThumbnail: string;
+  preprocessedThumbnail: string;
+}
+
+export interface SafetyEdgeItem {
+  id: string;
+  rule: string;
+  status: "Safe" | "Caution" | "Danger";
+  sourceBrand: string;
+  targetBrand: string;
+  compoundOrClass: string;
+  explanationEn: string;
+  explanationBn: string;
+}
+
+export interface TransparencyInspectorData {
+  sourceLabel: string;
+  totalTurnaroundMs: number;
+  wallClockMs?: number;
+  activeDetector: string;
+  activeOcrEngine: string;
+  activeReasoningMode: string;
+  stages: TransparencyStageTiming[];
+  evidenceItems: TransparencyEvidenceItem[];
+  safetyEdges: SafetyEdgeItem[];
+}
+
+export interface BenchmarkSample {
+  id: string;
+  filename: string;
+  title: string;
+  titleBn: string;
+  stripsCount: number;
+  imageUrl: string;
 }
 
 export interface ScanAnalysisResult {
@@ -47,6 +132,11 @@ export interface ScanAnalysisResult {
   banglaVoiceScript: string;
   englishTranslation: string;
   audioUrl?: string;
+  transparencyInspector?: TransparencyInspectorData;
+  sampleId?: string;
+  sampleTitle?: string;
+  sampleTitleBn?: string;
+  demoImageUrl?: string;
 }
 
 export interface PresetScenario {

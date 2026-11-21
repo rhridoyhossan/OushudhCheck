@@ -2,6 +2,9 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
+import { CustomCursor } from "@/components/custom-cursor";
+import { SmoothScroll } from "@/components/smooth-scroll";
+import { PageTransition } from "@/components/page-transition";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -16,7 +19,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "OushudhCheck (ওষুধচেক) • Multi-Strip Medicine Safety Scanner & Bangla Voice AI",
   description:
-    "CoU AI Hackathon 2026: Real-time YOLO26 blister-pack detection, 21,000+ Bangladeshi brand-to-generic chemical resolution, Drug-Drug Interaction screening, and Bangla audio guidance.",
+    "Real-time YOLO26 blister-pack detection, 17,000+ Bangladeshi brand-to-generic chemical resolution, Drug-Drug Interaction screening, and Bangla audio guidance.",
   icons: {
     icon: "/logo.jpg",
     shortcut: "/logo.jpg",
@@ -35,7 +38,9 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
-        {children}
+        <SmoothScroll />
+        <CustomCursor />
+        <PageTransition>{children}</PageTransition>
         <Toaster position="top-right" richColors />
       </body>
     </html>
