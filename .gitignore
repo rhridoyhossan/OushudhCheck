@@ -1,0 +1,29 @@
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Node / Next.js
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# Audio / temp uploads
+tmp/
+*.wav
+*.ogg
+*.mp3
+
+# OS & Editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
