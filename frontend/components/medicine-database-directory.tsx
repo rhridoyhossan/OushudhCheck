@@ -158,7 +158,7 @@ export function MedicineDatabaseDirectory() {
   };
 
   return (
-    <section className="max-w-6xl mx-auto px-4 sm:px-6 pt-4 pb-16 space-y-8">
+    <section className="max-w-6xl mx-auto px-4 sm:px-6 pt-8 sm:pt-10 pb-16 space-y-8">
       {/* Header */}
       <div className="text-center max-w-2xl mx-auto">
         <span className="inline-flex items-center gap-1.5 rounded-full bg-white/85 px-4 py-1 text-xs font-bold text-[#0ea86b] shadow-2xs border border-white">
@@ -166,10 +166,10 @@ export function MedicineDatabaseDirectory() {
           {stats.totalBrands.toLocaleString()} Brands •{" "}
           {stats.totalGenerics.toLocaleString()} Generic Compounds
         </span>
-        <h1 className="text-3xl sm:text-5xl font-extrabold tracking-tight text-[#09353c] mt-3">
+        <h1 className="text-3xl sm:text-5xl font-extrabold tracking-tight text-[#09353c] mt-4">
           Bangladeshi Medicine Database
         </h1>
-        <p className="text-sm text-[#46737a] mt-2">
+        <p className="text-sm text-[#46737a] mt-3.5 leading-relaxed">
           Connected live to{" "}
            search any brand, generic chemical, manufacturer, or indication.
         </p>
@@ -449,10 +449,10 @@ export function MedicineDatabaseDirectory() {
                 <div className="flex items-center justify-between">
                   <p className="text-xs font-extrabold uppercase tracking-wider text-[#0ea86b] flex items-center gap-1.5">
                     <Pill className="size-4 text-[#0ea86b]" />
-                    Beginner-Friendly Summary (Plain English)
+                    সহজ বাংলা সারসংক্ষেপ (Bangla Summary)
                   </p>
                   <span className="rounded-full bg-white px-2.5 py-0.5 text-[10px] font-bold text-[#0b5563] border border-teal-100">
-                    Easy Guide
+                    সহজ গাইড
                   </span>
                 </div>
                 <p className="text-xs sm:text-sm font-medium text-[#09353c] leading-relaxed">

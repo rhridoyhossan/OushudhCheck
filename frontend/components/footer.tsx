@@ -30,7 +30,6 @@ export function Footer() {
           </div>
           <p className="text-xs text-[#46737a] leading-relaxed">
             Multi-Strip Medicine Safety Scanner &amp; Bangla Voice Assistant.
-            CoU AI Hackathon 2026.
           </p>
         </div>
 
@@ -103,7 +102,7 @@ export function Footer() {
 
       {/* Bottom Copyright Bar */}
       <div className="pt-6 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-[#46737a]">
-        <span>© 2026 OushudhCheck • CoU AI Hackathon</span>
+        <span>© 2026 OushudhCheck • AI Medicine Safety Scanner</span>
         <div className="flex items-center gap-4 font-semibold text-[#0b5563]">
           <span>Next.js</span>
           <span>YOLO26</span>

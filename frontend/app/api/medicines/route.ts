@@ -143,8 +143,24 @@ stats = cur.execute(
 
 conn.close()
 
+items_out = []
+for r in rows:
+    d = dict(r)
+    b_name = d.get("brand_name") or ""
+    gen = d.get("generic") or ""
+    form = d.get("dosage_form") or "Tablet"
+    mfg = d.get("manufacturer") or ""
+    ind = d.get("indication") or "সংশ্লিষ্ট রোগের উপসর্গ"
+    pack = d.get("package_container") or ""
+    d["beginner_summary"] = (
+        f"{b_name}{f' ({pack})' if pack else ''} হলো একটি {form}{f' ({mfg})' if mfg else ''}, যার মূল সক্রিয় উপাদান {gen}। "
+        f"এটি মূলত {ind} নিরাময় ও নিয়ন্ত্রণে ব্যবহৃত হয়। প্রতিদিন চিকিৎসকের নির্ধারিত মাত্রায় খাবারের পরে সেবন করুন। "
+        f"সতর্কতা: একই জেনেরিক উপাদানের ({gen}) একাধিক ব্র্যান্ডের ওষুধ একসাথে খাবেন না।"
+    )
+    items_out.append(d)
+
 print(json.dumps({
-    "items": [dict(r) for r in rows],
+    "items": items_out,
     "total": int(total),
     "page": page,
     "limit": limit,

@@ -50,6 +50,72 @@ export interface SafetyAlert {
   clinicalRisk: string;
 }
 
+export interface TransparencyStageTiming {
+  id: string;
+  label: string;
+  engine: string;
+  durationMs: number;
+  color: string;
+}
+
+export interface TransparencyEvidenceItem {
+  id: string;
+  stripIndex: number;
+  brandName: string;
+  genericName: string;
+  strength: string;
+  dosageForm: string;
+  manufacturer: string;
+  statusBadge: "Safe" | "Caution" | "Danger";
+  rawOcrText: string;
+  ocrLinesCount: number;
+  fuzzyMatchScore: number;
+  matchMethod: string;
+  confidencePct: number;
+  bboxCoords: {
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
+    imgWidth: number;
+    imgHeight: number;
+  };
+  cropThumbnail: string;
+  preprocessedThumbnail: string;
+}
+
+export interface SafetyEdgeItem {
+  id: string;
+  rule: string;
+  status: "Safe" | "Caution" | "Danger";
+  sourceBrand: string;
+  targetBrand: string;
+  compoundOrClass: string;
+  explanationEn: string;
+  explanationBn: string;
+}
+
+export interface TransparencyInspectorData {
+  sourceLabel: string;
+  totalTurnaroundMs: number;
+  wallClockMs?: number;
+  activeDetector: string;
+  activeOcrEngine: string;
+  activeReasoningMode: string;
+  stages: TransparencyStageTiming[];
+  evidenceItems: TransparencyEvidenceItem[];
+  safetyEdges: SafetyEdgeItem[];
+}
+
+export interface BenchmarkSample {
+  id: string;
+  filename: string;
+  title: string;
+  titleBn: string;
+  stripsCount: number;
+  imageUrl: string;
+}
+
 export interface ScanAnalysisResult {
   scanId: string;
   timestamp: string;
@@ -66,6 +132,11 @@ export interface ScanAnalysisResult {
   banglaVoiceScript: string;
   englishTranslation: string;
   audioUrl?: string;
+  transparencyInspector?: TransparencyInspectorData;
+  sampleId?: string;
+  sampleTitle?: string;
+  sampleTitleBn?: string;
+  demoImageUrl?: string;
 }
 
 export interface PresetScenario {

@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useRef, useState, useCallback } from "react";
-import Image from "next/image";
+import React, { useRef, useState, useCallback, useEffect } from "react";
+import Link from "next/link";
 import Webcam from "react-webcam";
 import { useDropzone } from "react-dropzone";
 import {
@@ -11,6 +11,7 @@ import {
   Camera,
   Volume2,
   Pause,
+  Play,
   AlertOctagon,
   AlertTriangle,
   CheckCircle2,
@@ -24,6 +25,9 @@ import {
   Activity,
   Database,
   ArrowUpRight,
+  Cpu,
+  Sparkles,
+  BookOpen,
 } from "lucide-react";
 import { PRESET_SCENARIOS } from "@/lib/mock-data";
 import {
@@ -31,13 +35,53 @@ import {
   MedicineDatabaseRecord,
   ScanAnalysisResult,
 } from "@/lib/types";
-import { analyzeMedicineImage } from "@/lib/api";
+import {
+  analyzeMedicineImage,
+  BACKEND_ORIGIN,
+  runLiveBenchmarkScan,
+} from "@/lib/api";
 import { toast } from "sonner";
 
-/**
- * Parses a continuous clinical text block (such as `dosage_description` from medicines.db)
- * into clean, well-spaced sections (`{ label, content }`) matching the Database Directory modal.
- */
+const LIVE_SCAN_STAGES = [
+  {
+    id: 1,
+    labelBn: "ধাপ ১/৫: YOLO26n ONNX স্ট্রিপ ডিটেকশন চলছে...",
+    labelEn: "Locating blister pack bounding boxes via YOLO26n ONNX",
+    pct: 20,
+  },
+  {
+    id: 2,
+    labelBn: "ধাপ ২/৫: ফয়েল গ্লেয়ার রিমুভাল ও শার্পেনিং (CLAHE) চলছে...",
+    labelEn: "Removing aluminum foil reflections & sharpening text",
+    pct: 40,
+  },
+  {
+    id: 3,
+    labelBn: "ধাপ ৩/৫: PP-OCRv6 টেক্সট ও মাত্রা (mg) এক্সট্রাকশন চলছে...",
+    labelEn: "Extracting brand names & strengths (0° + 90° CCW)",
+    pct: 65,
+  },
+  {
+    id: 4,
+    labelBn: "ধাপ ৪/৫: RapidFuzz ও ১৭,১৯১টি ওষুধের ডাটাবেস ম্যাচিং চলছে...",
+    labelEn: "Resolving brand & generic compound against medicines.db",
+    pct: 85,
+  },
+  {
+    id: 5,
+    labelBn: "ধাপ ৫/৫: Safety SLM বাংলা সারসংক্ষেপ ও ডুপ্লিকেট যাচাই চলছে...",
+    labelEn: "Generating Bangla summary & evaluating pairwise conflict rules",
+    pct: 96,
+  },
+];
+
+function formatAudioTime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs.toString().padStart(2, "0")}`;
+}
+
 function parseStructuredClinicalText(raw: string): Array<{
   label: string | null;
   content: string;
@@ -83,16 +127,94 @@ export function MedicineScannerWorkspace() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [isScanning, setIsScanning] = useState(false);
+  const [scanStageIdx, setScanStageIdx] = useState(0);
+  const [scanElapsedMs, setScanElapsedMs] = useState(0);
   const [analysis, setAnalysis] = useState<ScanAnalysisResult>(
     PRESET_SCENARIOS[0].result
   );
+
+  // Dedicated Bangla Audio Player state (length, current time, % done, playing, loading)
+  const [isVoiceLoading, setIsVoiceLoading] = useState(false);
+  const [readyAudioBlobUrl, setReadyAudioBlobUrl] = useState<string | null>(
+    null
+  );
   const [isPlayingVoice, setIsPlayingVoice] = useState(false);
+  const [audioDuration, setAudioDuration] = useState<number>(0);
+  const [audioCurrentTime, setAudioCurrentTime] = useState<number>(0);
+
   const [activeMedicine, setActiveMedicine] =
     useState<MedicineDatabaseRecord | null>(null);
   const [loadingBrandId, setLoadingBrandId] = useState<string | null>(null);
 
   const webcamRef = useRef<Webcam>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Background voice pre-fetcher: as soon as scan results appear on screen, prepare the Bangla MP3
+  // asynchronously while showing a live animated voice loader until ready.
+  useEffect(() => {
+    if (step !== "summary" || !analysis?.audioUrl) {
+      setIsVoiceLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsVoiceLoading(true);
+    setReadyAudioBlobUrl(null);
+    setAudioDuration(0);
+    setAudioCurrentTime(0);
+    setIsPlayingVoice(false);
+
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+
+    const fullAudioUrl = analysis.audioUrl.startsWith("http")
+      ? analysis.audioUrl
+      : `${BACKEND_ORIGIN}${analysis.audioUrl}`;
+
+    fetch(fullAudioUrl)
+      .then((res) =>
+        res.ok ? res.blob() : Promise.reject(new Error("TTS failed"))
+      )
+      .then((blob) => {
+        if (cancelled) return;
+        const objUrl = URL.createObjectURL(blob);
+        setReadyAudioBlobUrl(objUrl);
+
+        const audio = new Audio(objUrl);
+        audioRef.current = audio;
+        audio.onloadedmetadata = () => {
+          if (!cancelled) {
+            setAudioDuration(audio.duration || 0);
+          }
+        };
+        audio.ontimeupdate = () => {
+          if (!cancelled) {
+            setAudioCurrentTime(audio.currentTime || 0);
+          }
+        };
+        audio.onended = () => {
+          if (!cancelled) {
+            setIsPlayingVoice(false);
+            setAudioCurrentTime(audio.duration || 0);
+          }
+        };
+        audio.onerror = () => {
+          if (!cancelled) setIsPlayingVoice(false);
+        };
+        setIsVoiceLoading(false);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setIsVoiceLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [step, analysis?.scanId, analysis?.audioUrl]);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles.length > 0) {
@@ -126,32 +248,54 @@ export function MedicineScannerWorkspace() {
 
   const handleNextScan = async () => {
     setIsScanning(true);
+    setScanStageIdx(0);
+    setScanElapsedMs(0);
 
-    let fileToAnalyze: File | Blob | null = selectedFile;
-    if (!fileToAnalyze && imagePreview) {
-      const res = await fetch(imagePreview);
-      fileToAnalyze = await res.blob();
-    }
-
-    if (fileToAnalyze) {
-      const { data, isLiveBackend } = await analyzeMedicineImage(fileToAnalyze);
-      setAnalysis(data);
-      toast.success(
-        isLiveBackend ? "FastAPI Scan Complete" : "Medicine Scan Complete",
-        {
-          description: `${data.detectedStrips.length} strips analyzed in ${data.inferenceTimeMs}ms`,
-        }
+    const t0 = performance.now();
+    const timer = setInterval(() => {
+      setScanElapsedMs(Math.round(performance.now() - t0));
+      setScanStageIdx((prev) =>
+        Math.min(LIVE_SCAN_STAGES.length - 1, prev + 1)
       );
-    } else {
-      await new Promise((r) => setTimeout(r, 650));
-      setAnalysis(PRESET_SCENARIOS[0].result);
-      toast.success("Medicine Scan Complete", {
-        description: `${PRESET_SCENARIOS[0].result.detectedStrips.length} strips analyzed`,
-      });
-    }
+    }, 320);
 
-    setIsScanning(false);
-    setStep("summary");
+    try {
+      let fileToAnalyze: File | Blob | null = selectedFile;
+      if (!fileToAnalyze && imagePreview) {
+        const res = await fetch(imagePreview);
+        fileToAnalyze = await res.blob();
+      }
+
+      if (fileToAnalyze) {
+        const { data, isLiveBackend } = await analyzeMedicineImage(
+          fileToAnalyze
+        );
+        setAnalysis(data);
+        toast.success(
+          isLiveBackend ? "FastAPI Scan Complete" : "Medicine Scan Complete",
+          {
+            description: `${data.detectedStrips.length} strips analyzed in ${data.inferenceTimeMs}ms`,
+          }
+        );
+      } else {
+        const { data, isLiveBackend } = await runLiveBenchmarkScan(
+          "multi-5-strips"
+        );
+        setAnalysis(data);
+        toast.success(
+          isLiveBackend
+            ? "Live Sample Benchmark Scan Complete"
+            : "Medicine Scan Complete",
+          {
+            description: `${data.detectedStrips.length} strips analyzed in ${data.inferenceTimeMs}ms`,
+          }
+        );
+      }
+      setStep("summary");
+    } finally {
+      clearInterval(timer);
+      setIsScanning(false);
+    }
   };
 
   const handleOpenStripDatabaseInfo = async (strip: BoundingBox) => {
@@ -199,7 +343,6 @@ export function MedicineScannerWorkspace() {
       setLoadingBrandId(null);
     }
 
-    // Fallback record constructed from strip fields if database query didn't return
     setActiveMedicine({
       brand_id: 0,
       brand_name: strip.brandName,
@@ -210,7 +353,7 @@ export function MedicineScannerWorkspace() {
       package_container: strip.strength,
       drug_class: null,
       indication: strip.dosageEnglish,
-      dosage_description: `${strip.dosageEnglish}\n${strip.dosageBangla}`,
+      dosage_description: `${strip.dosageBangla}\n${strip.dosageEnglish}`,
       interaction_description: null,
       side_effects_description: null,
       pregnancy_and_lactation_description: null,
@@ -227,6 +370,7 @@ export function MedicineScannerWorkspace() {
       window.speechSynthesis.cancel();
     }
     setIsPlayingVoice(false);
+    setAudioCurrentTime(0);
     setStep("upload");
   };
 
@@ -240,7 +384,6 @@ export function MedicineScannerWorkspace() {
     if (isPlayingVoice) {
       if (audioRef.current) {
         audioRef.current.pause();
-        audioRef.current.currentTime = 0;
       }
       if ("speechSynthesis" in window) {
         window.speechSynthesis.cancel();
@@ -249,21 +392,16 @@ export function MedicineScannerWorkspace() {
       return;
     }
 
-    if (analysis.audioUrl) {
-      const baseUrl = (
-        process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1"
-      ).replace(/\/api\/v1\/?$/, "");
-      const fullAudioUrl = analysis.audioUrl.startsWith("http")
-        ? analysis.audioUrl
-        : `${baseUrl}${analysis.audioUrl}`;
-      const audio = new Audio(fullAudioUrl);
-      audioRef.current = audio;
+    if (audioRef.current && readyAudioBlobUrl) {
+      if (
+        audioDuration > 0 &&
+        audioRef.current.currentTime >= audioDuration - 0.1
+      ) {
+        audioRef.current.currentTime = 0;
+        setAudioCurrentTime(0);
+      }
       setIsPlayingVoice(true);
-      audio.onended = () => setIsPlayingVoice(false);
-      audio.onerror = () => {
-        setIsPlayingVoice(false);
-      };
-      audio.play().catch(() => setIsPlayingVoice(false));
+      audioRef.current.play().catch(() => setIsPlayingVoice(false));
       return;
     }
 
@@ -278,10 +416,25 @@ export function MedicineScannerWorkspace() {
     window.speechSynthesis.speak(utterance);
   };
 
+  const handleSeekAudio = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const targetSec = Number(e.target.value);
+    if (audioRef.current && Number.isFinite(targetSec)) {
+      audioRef.current.currentTime = targetSec;
+      setAudioCurrentTime(targetSec);
+    }
+  };
+
+  const audioProgressPct =
+    audioDuration > 0
+      ? Math.min(100, Math.round((audioCurrentTime / audioDuration) * 100))
+      : 0;
+
+  const activeStage = LIVE_SCAN_STAGES[scanStageIdx] || LIVE_SCAN_STAGES[0];
+
   const steps = [
     { id: 1, label: "YOLO26", status: "done" },
-    { id: 2, label: "Foil OCR", status: "done" },
-    { id: 3, label: "21K+ BD Index", status: "done" },
+    { id: 2, label: "PP-OCRv6", status: "done" },
+    { id: 3, label: "17K+ BD Index", status: "done" },
     {
       id: 4,
       label: "Upload",
@@ -294,25 +447,12 @@ export function MedicineScannerWorkspace() {
     },
   ];
 
-  return (
-    <section className="max-w-3xl mx-auto px-4 sm:px-6 pt-6 pb-20">
-      {/* Top Centered Brand Header */}
-      <div className="flex items-center justify-center gap-2.5 mb-6">
-        <div className="relative size-8 rounded-xl overflow-hidden bg-white shadow-sm border border-white shrink-0">
-          <Image
-            src="/logo.jpg"
-            alt="OushudhCheck Logo"
-            fill
-            className="object-cover"
-          />
-        </div>
-        <span className="text-xl font-extrabold tracking-tight text-[#09353c]">
-          Oushudh<span className="text-[#0ea86b]">Check</span>
-        </span>
-      </div>
+  const equalizerHeights = [40, 85, 55, 100, 65, 90, 45, 75, 60, 95, 50, 80];
 
-      {/* Horizontal 5-Step Progress Pill Bar */}
-      <div className="rounded-full bg-white/95 backdrop-blur-xl p-2 shadow-[0_10px_35px_rgba(11,85,99,0.07)] border border-white mb-6 overflow-x-auto">
+  return (
+    <section className="max-w-5xl mx-auto px-4 sm:px-6 pt-8 sm:pt-10 pb-20 space-y-8">
+      {/* Horizontal 5-Step Progress Pill Bar (No duplicate logo here) */}
+      <div className="rounded-full bg-white/95 backdrop-blur-xl p-2 shadow-[0_10px_35px_rgba(11,85,99,0.07)] border border-white overflow-x-auto">
         <div className="flex items-center justify-between gap-1.5 min-w-[460px]">
           {steps.map((s) => {
             const isDone = s.status === "done";
@@ -364,10 +504,65 @@ export function MedicineScannerWorkspace() {
         </div>
       </div>
 
-      {/* Main Centered White Card */}
+      {/* LIVE 5-STAGE PROGRESS OVERLAY BANNER WHILE SCANNING */}
+      {isScanning && (
+        <div className="rounded-3xl bg-white/95 backdrop-blur-2xl p-6 shadow-xl border-2 border-[#0ea86b]/40 space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <Loader2 className="size-5 text-[#0ea86b] animate-spin shrink-0" />
+              <div>
+                <p className="text-sm font-extrabold text-[#09353c]">
+                  {activeStage.labelBn}
+                </p>
+                <p className="text-xs text-[#46737a]">{activeStage.labelEn}</p>
+              </div>
+            </div>
+            <span className="font-mono text-xs font-extrabold text-[#0ea86b] bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200 shrink-0">
+              {activeStage.pct}% • {scanElapsedMs} ms
+            </span>
+          </div>
+
+          <div className="h-2.5 w-full rounded-full bg-teal-100 overflow-hidden">
+            <div
+              style={{ width: `${activeStage.pct}%` }}
+              className="h-full bg-gradient-to-r from-[#0b5563] to-[#0ea86b] transition-all duration-300 rounded-full"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 pt-1">
+            {LIVE_SCAN_STAGES.map((st, idx) => {
+              const done = idx < scanStageIdx;
+              const current = idx === scanStageIdx;
+              return (
+                <div
+                  key={st.id}
+                  className={`rounded-xl px-2.5 py-2 text-[11px] font-bold flex items-center gap-1.5 border ${
+                    current
+                      ? "bg-emerald-50 text-[#09353c] border-[#0ea86b]"
+                      : done
+                      ? "bg-[#f2f9f8] text-[#0ea86b] border-teal-100"
+                      : "bg-white text-[#46737a]/60 border-teal-50"
+                  }`}
+                >
+                  {done ? (
+                    <Check className="size-3.5 text-[#0ea86b] shrink-0" />
+                  ) : current ? (
+                    <Loader2 className="size-3.5 text-[#0ea86b] animate-spin shrink-0" />
+                  ) : (
+                    <span className="size-3.5 rounded-full bg-teal-100 inline-block shrink-0" />
+                  )}
+                  <span className="truncate">ধাপ {st.id}/৫</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Main Centered White Card (Expanded to max-w-5xl like /database & /pipeline) */}
       <div className="rounded-[2.25rem] bg-white/95 backdrop-blur-2xl p-6 sm:p-10 shadow-[0_24px_70px_rgba(11,85,99,0.09)] border border-white">
         {step === "upload" ? (
-          <div className="space-y-7">
+          <div className="space-y-7 max-w-3xl mx-auto">
             {/* Title & Subtitle */}
             <div className="text-center space-y-1.5">
               <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-[#09353c]">
@@ -375,7 +570,8 @@ export function MedicineScannerWorkspace() {
               </h1>
               <p className="text-xs sm:text-sm text-[#46737a]">
                 Place 1 to 6 medicine blister strips on a table for instant
-                brand, strength (mg), duplicate &amp; interaction screening.
+                brand, strength (mg), Bangla summary, duplicate &amp;
+                interaction screening.
               </p>
             </div>
 
@@ -393,7 +589,7 @@ export function MedicineScannerWorkspace() {
 
                 {imagePreview ? (
                   <div className="space-y-4">
-                    <div className="relative mx-auto max-w-sm aspect-video rounded-2xl overflow-hidden border border-teal-200 shadow-sm bg-[#f2f9f8]">
+                    <div className="relative mx-auto max-w-md aspect-video rounded-2xl overflow-hidden border border-teal-200 shadow-sm bg-[#f2f9f8]">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={imagePreview}
@@ -483,14 +679,14 @@ export function MedicineScannerWorkspace() {
               </div>
             )}
 
-            {/* Bottom Back & Emerald Next Pill Buttons */}
+            {/* Bottom Reset & Emerald Scan Pill Buttons */}
             <div className="grid grid-cols-2 gap-4 pt-1">
               <button
                 type="button"
                 onClick={handleResetFile}
                 className="w-full rounded-full bg-white hover:bg-[#f2f9f8] text-[#09353c] text-xs sm:text-sm font-bold py-3.5 border border-teal-200 transition cursor-pointer"
               >
-                Back
+                Reset
               </button>
 
               <button
@@ -502,17 +698,21 @@ export function MedicineScannerWorkspace() {
                 {isScanning ? (
                   <>
                     <Loader2 className="size-4 animate-spin" />
-                    <span>Scanning...</span>
+                    <span>Scanning ({activeStage.pct}%)...</span>
                   </>
                 ) : (
-                  <span>Next</span>
+                  <span>
+                    {selectedFile || imagePreview
+                      ? "Scan Uploaded Photo"
+                      : "Next"}
+                  </span>
                 )}
               </button>
             </div>
           </div>
         ) : (
           /* =============================================================
-             STEP 5: SUMMARY VIEW WITH CLICKABLE DATABASE CARDS & MODAL
+             STEP 5: SUMMARY VIEW (Structured Guide + Animated Audio Box)
              ============================================================= */
           <div className="space-y-6">
             <div className="text-center space-y-1">
@@ -520,51 +720,179 @@ export function MedicineScannerWorkspace() {
                 <Check className="size-3 stroke-[3]" />
                 Scan Completed in {analysis.inferenceTimeMs} ms
               </span>
-              <h2 className="text-2xl font-extrabold tracking-tight text-[#09353c]">
-                Medicine Safety Summary
+              <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-[#09353c]">
+                Medicine Safety Summary (ওষুধের নিরাপত্তা রিপোর্ট)
               </h2>
-              <p className="text-xs text-[#46737a]">
-                {analysis.detectedStrips.length} medicine strip(s) matched against{" "}
-                <code className="font-mono">medicines.db</code> • Click any
-                medicine card below for full clinical &amp; database details
+              <p className="text-xs sm:text-sm text-[#46737a]">
+                {analysis.detectedStrips.length}টি ওষুধের পাতা{" "}
+                <code className="font-mono">medicines.db</code> থেকে যাচাইকৃত •
+                যেকোনো ওষুধের কার্ডে ক্লিক করে সম্পূর্ণ ডাটাবেস তথ্য দেখুন
               </p>
             </div>
 
-            {/* Bangla Voice Readout Bar */}
-            <div className="rounded-2xl bg-[#f2f9f8] p-4 border border-teal-100 flex flex-col sm:flex-row items-center justify-between gap-4">
-              <div className="space-y-1 text-center sm:text-left">
-                <p className="text-[11px] font-bold uppercase tracking-wider text-[#0d9488]">
-                  বাংলা ভয়েস গাইড (Bangla Audio Guidance)
-                </p>
-                <p className="text-xs sm:text-sm font-semibold text-[#09353c] leading-relaxed">
-                  “{analysis.banglaVoiceScript}”
-                </p>
+            {/* 1. DEDICATED ANIMATED BANGLA AUDIO PLAYER BOX (With Length & Progress Done) */}
+            <div className="rounded-3xl bg-gradient-to-r from-[#09353c] via-[#0b5563] to-[#0d6e6e] p-5 sm:p-6 text-white shadow-lg border border-teal-700/40 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="flex items-center gap-3.5">
+                  <button
+                    type="button"
+                    onClick={toggleBanglaVoice}
+                    disabled={isVoiceLoading}
+                    className={`flex items-center justify-center size-12 rounded-2xl shadow-md transition cursor-pointer shrink-0 ${
+                      isVoiceLoading
+                        ? "bg-white/15 text-emerald-300 cursor-wait"
+                        : isPlayingVoice
+                        ? "bg-white text-[#09353c] hover:bg-emerald-50"
+                        : "bg-[#0ea86b] text-white hover:bg-emerald-400"
+                    }`}
+                    aria-label={isPlayingVoice ? "Pause Bangla Audio" : "Play Bangla Audio"}
+                  >
+                    {isVoiceLoading ? (
+                      <Loader2 className="size-5 animate-spin" />
+                    ) : isPlayingVoice ? (
+                      <Pause className="size-5 fill-current" />
+                    ) : (
+                      <Play className="size-5 fill-current ml-0.5" />
+                    )}
+                  </button>
+
+                  <div className="space-y-0.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs sm:text-sm font-extrabold tracking-wide flex items-center gap-1.5">
+                        <Volume2 className="size-4 text-emerald-300" />
+                        বাংলা ভয়েস গাইড অডিও (Bangla Voice Player)
+                      </span>
+                      {isVoiceLoading ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/20 text-amber-200 border border-amber-300/30 px-2.5 py-0.5 text-[10px] font-bold">
+                          <Loader2 className="size-3 animate-spin" />
+                          অডিও তৈরি হচ্ছে...
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-400/20 text-emerald-200 border border-emerald-300/30 px-2.5 py-0.5 text-[10px] font-bold">
+                          <Check className="size-3 stroke-[3]" />
+                          {isPlayingVoice ? "চলছে (Playing)" : "প্রস্তুত (Ready)"}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-teal-100/85">
+                      {isVoiceLoading
+                        ? "অন্যান্য তথ্য নিচে দেখানো হয়েছে — ভয়েস অডিও ব্যাকগ্রাউন্ডে প্রস্তুত হচ্ছে..."
+                        : `মোট দৈর্ঘ্য: ${formatAudioTime(audioDuration)} • সম্পন্ন: ${audioProgressPct}%`}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Animated Soundwave Equalizer Bars */}
+                <div className="flex items-end justify-center sm:justify-end gap-1 h-9 px-3 py-1.5 rounded-2xl bg-white/10 border border-white/10">
+                  {equalizerHeights.map((h, i) => (
+                    <span
+                      key={i}
+                      style={{
+                        height: isPlayingVoice
+                          ? `${h}%`
+                          : isVoiceLoading
+                          ? `${Math.max(25, Math.round(h * 0.5))}%`
+                          : "22%",
+                        animationDelay: `${i * 90}ms`,
+                      }}
+                      className={`w-1 rounded-full transition-all duration-300 ${
+                        isPlayingVoice
+                          ? "bg-emerald-300 animate-pulse"
+                          : isVoiceLoading
+                          ? "bg-amber-300/70 animate-pulse"
+                          : "bg-teal-200/50"
+                      }`}
+                    />
+                  ))}
+                </div>
               </div>
 
-              <button
-                type="button"
-                onClick={toggleBanglaVoice}
-                className={`shrink-0 inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-xs font-bold text-white shadow-sm transition cursor-pointer ${
-                  isPlayingVoice
-                    ? "bg-[#0b5563] hover:bg-[#09353c]"
-                    : "bg-[#0ea86b] hover:bg-[#0b5563]"
-                }`}
-              >
-                {isPlayingVoice ? (
-                  <>
-                    <Pause className="size-3.5 fill-current" />
-                    <span>Pause</span>
-                  </>
-                ) : (
-                  <>
-                    <Volume2 className="size-4" />
-                    <span>বাংলায় শুনুন</span>
-                  </>
-                )}
-              </button>
+              {/* Audio Length & Interactive Progress Bar */}
+              <div className="space-y-1.5">
+                <input
+                  type="range"
+                  min={0}
+                  max={audioDuration || 100}
+                  step={0.1}
+                  value={audioCurrentTime}
+                  disabled={isVoiceLoading || audioDuration <= 0}
+                  onChange={handleSeekAudio}
+                  className="w-full h-2 rounded-full accent-[#0ea86b] bg-white/20 cursor-pointer disabled:opacity-40"
+                />
+                <div className="flex items-center justify-between text-[11px] font-mono text-teal-100/90">
+                  <span>{formatAudioTime(audioCurrentTime)}</span>
+                  <span className="font-bold text-emerald-300">
+                    {isVoiceLoading
+                      ? "Generating MP3..."
+                      : `${audioProgressPct}% Done`}
+                  </span>
+                  <span>
+                    {audioDuration > 0
+                      ? formatAudioTime(audioDuration)
+                      : "--:--"}
+                  </span>
+                </div>
+              </div>
             </div>
 
-            {/* Duplicate & Interaction Alerts */}
+            {/* 2. CLEANLY ALIGNED STRUCTURED BANGLA GUIDE SUMMARY BOX */}
+            <div className="rounded-3xl bg-[#f2f9f8] p-5 border border-teal-100 space-y-3.5">
+              <div className="flex items-center justify-between border-b border-teal-200/60 pb-2.5">
+                <p className="text-xs font-extrabold uppercase tracking-wider text-[#0b5563] flex items-center gap-1.5">
+                  <BookOpen className="size-4 text-[#0ea86b]" />
+                  বাংলা গাইড সারসংক্ষেপ (Quick Medicine Overview)
+                </p>
+                <span className="rounded-full bg-white px-2.5 py-0.5 text-[10px] font-bold text-[#0ea86b] border border-teal-100">
+                  {analysis.detectedStrips.length}টি শনাক্তকৃত ওষুধ
+                </span>
+              </div>
+
+              <div className="divide-y divide-teal-100/80">
+                {analysis.detectedStrips.map((strip, idx) => (
+                  <div
+                    key={strip.id}
+                    className="py-2.5 first:pt-0 last:pb-0 flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                  >
+                    <div className="flex items-start gap-2.5">
+                      <span className="flex items-center justify-center size-6 rounded-full bg-[#0ea86b] text-white text-[11px] font-extrabold shrink-0 mt-0.5">
+                        {idx + 1}
+                      </span>
+                      <div className="space-y-0.5">
+                        <p className="text-xs sm:text-sm font-extrabold text-[#09353c]">
+                          {strip.brandName}{" "}
+                          <span className="text-[#0ea86b]">
+                            ({strip.strength})
+                          </span>
+                          <span className="ml-2 font-semibold text-xs text-[#0d9488]">
+                            • {strip.genericName}
+                          </span>
+                        </p>
+                        <p className="text-xs text-[#46737a] leading-relaxed">
+                          {strip.dosageBangla}
+                        </p>
+                      </div>
+                    </div>
+                    <span
+                      className={`self-start sm:self-center rounded-full px-2.5 py-0.5 text-[10px] font-extrabold shrink-0 border ${
+                        strip.status === "duplicate"
+                          ? "bg-rose-50 text-rose-700 border-rose-200"
+                          : strip.status === "interaction"
+                          ? "bg-amber-50 text-amber-800 border-amber-200"
+                          : "bg-emerald-50 text-[#0ea86b] border-emerald-200"
+                      }`}
+                    >
+                      {strip.status === "duplicate"
+                        ? "ডুপ্লিকেট সতর্কতা"
+                        : strip.status === "interaction"
+                        ? "সতর্কতা"
+                        : "নিরাপদ"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* 3. Duplicate & Interaction Alerts */}
             {analysis.alerts.length > 0 && (
               <div className="space-y-2.5">
                 {analysis.alerts.map((alert) => {
@@ -602,16 +930,18 @@ export function MedicineScannerWorkspace() {
               </div>
             )}
 
-            {/* Detected Strips Database Cards (Click any card to open full Database Modal) */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {/* 4. Detected Strips Database Cards (Click any card to open full Database Modal; no সময়সূচী row) */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {analysis.detectedStrips.map((strip) => {
                 const isDup = strip.status === "duplicate";
                 const dbRec = strip.databaseRecord;
                 const dosageForm =
                   strip.dosageForm || dbRec?.dosage_form || "Tablet";
                 const indication = dbRec?.indication || null;
-                const beginnerSummary =
-                  dbRec?.beginner_summary || strip.dosageEnglish;
+                const banglaSummary =
+                  dbRec?.beginner_summary ||
+                  strip.dosageEnglish ||
+                  strip.dosageBangla;
                 const isLoadingThis = loadingBrandId === strip.id;
 
                 return (
@@ -650,7 +980,7 @@ export function MedicineScannerWorkspace() {
                       {/* Brand Name & Generic Name */}
                       <div>
                         <div className="flex items-center justify-between gap-2">
-                          <h3 className="font-extrabold text-base sm:text-lg text-[#09353c] group-hover:text-[#0ea86b] transition">
+                          <h3 className="font-extrabold text-base text-[#09353c] group-hover:text-[#0ea86b] transition">
                             {strip.brandName}{" "}
                             <span className="text-sm font-bold text-[#0b5563]">
                               ({strip.strength})
@@ -667,27 +997,16 @@ export function MedicineScannerWorkspace() {
                         </p>
                       </div>
 
-                      {/* Metadata Rows matching Database Section */}
+                      {/* Metadata Rows + Bangla Beginner Summary */}
                       <div className="pt-2.5 border-t border-teal-50 space-y-1.5 text-[11px]">
                         <div className="flex items-start justify-between gap-2">
                           <span className="text-[#46737a] shrink-0">
-                            Company:
+                            প্রস্তুতকারক:
                           </span>
                           <span className="font-semibold text-[#09353c] text-right line-clamp-1">
                             {strip.manufacturer || "Pharmaceuticals BD"}
                           </span>
                         </div>
-
-                        {dbRec?.drug_class && (
-                          <div className="flex items-start justify-between gap-2">
-                            <span className="text-[#46737a] shrink-0">
-                              Class:
-                            </span>
-                            <span className="font-medium text-[#0b5563] text-right line-clamp-1">
-                              {dbRec.drug_class}
-                            </span>
-                          </div>
-                        )}
 
                         {indication && (
                           <div className="pt-1">
@@ -697,10 +1016,15 @@ export function MedicineScannerWorkspace() {
                           </div>
                         )}
 
-                        {beginnerSummary && (
-                          <p className="text-[11px] text-[#46737a] line-clamp-2 pt-1 leading-relaxed">
-                            {beginnerSummary}
-                          </p>
+                        {banglaSummary && (
+                          <div className="rounded-xl bg-[#f2f9f8]/90 p-2.5 border border-teal-100/70 mt-1.5">
+                            <span className="block text-[10px] font-extrabold text-[#0ea86b] mb-0.5">
+                              সহজ বাংলা সারসংক্ষেপ:
+                            </span>
+                            <p className="text-[11px] text-[#09353c] line-clamp-3 leading-relaxed">
+                              {banglaSummary}
+                            </p>
+                          </div>
                         )}
                       </div>
                     </div>
@@ -709,10 +1033,10 @@ export function MedicineScannerWorkspace() {
                     <div className="mt-3 pt-2.5 border-t border-teal-100/70 flex items-center justify-between text-[11px] font-bold text-[#0ea86b]">
                       <span className="inline-flex items-center gap-1">
                         <Database className="size-3.5" />
-                        View Full Database Info
+                        বিস্তারিত ডাটাবেস তথ্য দেখুন
                       </span>
                       <span className="text-[10px] text-[#46737a] font-semibold">
-                        Click Card →
+                        Click →
                       </span>
                     </div>
                   </div>
@@ -720,8 +1044,8 @@ export function MedicineScannerWorkspace() {
               })}
             </div>
 
-            {/* Bottom Back & Scan Another Photo Buttons */}
-            <div className="grid grid-cols-2 gap-4 pt-2">
+            {/* Bottom Back, AI Pipeline Page Link & Scan Another Photo Buttons */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
               <button
                 type="button"
                 onClick={handleBackToUpload}
@@ -729,6 +1053,14 @@ export function MedicineScannerWorkspace() {
               >
                 Back
               </button>
+
+              <Link
+                href="/pipeline"
+                className="w-full inline-flex items-center justify-center gap-1.5 rounded-full bg-[#f2f9f8] hover:bg-teal-100/80 text-[#0b5563] text-xs sm:text-sm font-bold py-3.5 border border-teal-200 transition"
+              >
+                <Cpu className="size-4 text-[#0ea86b]" />
+                <span>AI Pipeline Inspector</span>
+              </Link>
 
               <button
                 type="button"
@@ -746,7 +1078,7 @@ export function MedicineScannerWorkspace() {
       </div>
 
       {/* =====================================================================
-          CLINICAL DATABASE DETAIL MODAL (Identical to Database Section Modal)
+          CLINICAL DATABASE DETAIL MODAL (With Bangla Beginner Summary)
          ===================================================================== */}
       {activeMedicine && (
         <div
@@ -811,16 +1143,16 @@ export function MedicineScannerWorkspace() {
               </div>
             </div>
 
-            {/* Beginner-Friendly Summary Highlight Card */}
+            {/* Bangla Beginner-Friendly Summary Highlight Card */}
             {activeMedicine.beginner_summary && (
               <div className="rounded-3xl bg-gradient-to-br from-[#f2f9f8] via-emerald-50/60 to-[#f2f9f8] p-5 border-2 border-[#0ea86b]/30 shadow-xs space-y-2">
                 <div className="flex items-center justify-between">
                   <p className="text-xs font-extrabold uppercase tracking-wider text-[#0ea86b] flex items-center gap-1.5">
-                    <Pill className="size-4 text-[#0ea86b]" />
-                    Beginner-Friendly Summary (Plain English)
+                    <Sparkles className="size-4 text-[#0ea86b]" />
+                    সহজ বাংলা সারসংক্ষেপ (Bangla Summary)
                   </p>
                   <span className="rounded-full bg-white px-2.5 py-0.5 text-[10px] font-bold text-[#0b5563] border border-teal-100">
-                    Easy Guide
+                    Safety SLM
                   </span>
                 </div>
                 <p className="text-xs sm:text-sm font-medium text-[#09353c] leading-relaxed">

@@ -1,8 +1,9 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useRef } from "react";
 import Link from "next/link";
 import Image from "next/image";
+import gsap from "gsap";
 import {
   Volume2,
   ArrowRight,
@@ -15,13 +16,41 @@ import {
 } from "lucide-react";
 
 export function HealthcareShowcaseCard() {
+  const containerRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const ctx = gsap.context(() => {
+      const badges = gsap.utils.toArray<HTMLElement>(".floating-mini-badge");
+      badges.forEach((badge, i) => {
+        const yOffset = i % 2 === 0 ? -14 : -11;
+        const xOffset = i % 2 === 0 ? 5 : -5;
+        const rot = i % 2 === 0 ? 6 : -6;
+        gsap.to(badge, {
+          y: yOffset,
+          x: xOffset,
+          rotation: rot,
+          duration: 2.2 + i * 0.35,
+          repeat: -1,
+          yoyo: true,
+          ease: "sine.inOut",
+          delay: i * 0.25,
+        });
+      });
+    }, containerRef);
+
+    return () => ctx.revert();
+  }, []);
+
   return (
-    <section className="relative max-w-5xl mx-auto px-4 sm:px-6 pt-4 pb-12">
+    <section
+      ref={containerRef}
+      className="relative max-w-5xl mx-auto px-4 sm:px-6 pt-4 pb-12"
+    >
       {/* Top Floating Circular Avatar / Badge Accents */}
-      <div className="hidden sm:flex items-center justify-center size-11 rounded-full bg-white/90 backdrop-blur-md shadow-md border border-white absolute -top-1 left-1/4 z-20 text-[#0b5563]">
+      <div className="floating-mini-badge hidden sm:flex items-center justify-center size-11 rounded-full bg-white/90 backdrop-blur-md shadow-md border border-white absolute -top-1 left-1/4 z-20 text-[#0b5563] will-change-transform">
         <Stethoscope className="size-4.5 text-[#0ea86b]" />
       </div>
-      <div className="hidden sm:flex items-center justify-center size-12 rounded-full bg-white/95 backdrop-blur-md shadow-md border-2 border-white absolute -top-2 right-1/4 z-20 overflow-hidden">
+      <div className="floating-mini-badge hidden sm:flex items-center justify-center size-12 rounded-full bg-white/95 backdrop-blur-md shadow-md border-2 border-white absolute -top-2 right-1/4 z-20 overflow-hidden will-change-transform">
         <Image
           src="/logo.jpg"
           alt="OushudhCheck Badge"
@@ -82,7 +111,7 @@ export function HealthcareShowcaseCard() {
         </div>
 
         {/* Floating Right Circular Icon inside Card */}
-        <div className="hidden md:flex items-center justify-center size-11 rounded-full bg-white/80 backdrop-blur-md shadow-sm border border-white absolute top-24 right-12 z-20 text-[#0b5563]">
+        <div className="floating-mini-badge hidden md:flex items-center justify-center size-11 rounded-full bg-white/80 backdrop-blur-md shadow-sm border border-white absolute top-24 right-12 z-20 text-[#0b5563] will-change-transform">
           <Sparkles className="size-4 text-[#0ea86b]" />
         </div>
 
@@ -178,10 +207,10 @@ export function HealthcareShowcaseCard() {
       </div>
 
       {/* Bottom Floating Circular Badges outside card */}
-      <div className="hidden sm:flex items-center justify-center size-10 rounded-full bg-white/90 shadow-md border border-white absolute bottom-8 left-4 z-20 text-[#0b5563]">
+      <div className="floating-mini-badge hidden sm:flex items-center justify-center size-10 rounded-full bg-white/90 shadow-md border border-white absolute bottom-8 left-4 z-20 text-[#0b5563] will-change-transform">
         <ShieldCheck className="size-4 text-[#0ea86b]" />
       </div>
-      <div className="hidden sm:flex items-center justify-center size-11 rounded-full bg-white/90 shadow-md border border-white absolute bottom-4 right-24 z-20 text-[#0b5563]">
+      <div className="floating-mini-badge hidden sm:flex items-center justify-center size-11 rounded-full bg-white/90 shadow-md border border-white absolute bottom-4 right-24 z-20 text-[#0b5563] will-change-transform">
         <Volume2 className="size-4 text-[#0d9488]" />
       </div>
     </section>
