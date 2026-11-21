@@ -62,7 +62,12 @@ def list_medicines(
 
     try:
         cur = conn.cursor()
-        q_clean = q.strip().lower()
+        import re as _re
+        q_raw = q.strip().lower()
+        # Strip trailing strength tokens like '500 mg', '500m', '50mg', '10 mg' so searching 'Naprosyn 500 mg' finds 'Naprosyn'
+        q_stripped = _re.sub(r"\b\d+(?:\.\d+)?\s*(?:mg|mcg|g|ml|iu|m)?\b", " ", q_raw, flags=_re.IGNORECASE)
+        q_stripped = _re.sub(r"[*]+", " ", q_stripped)
+        q_clean = " ".join(q_stripped.split()).strip() or q_raw
         form_clean = dosageForm.strip()
         offset = (page - 1) * limit
 
@@ -262,6 +267,7 @@ async def scan_medicine_strips(file: UploadFile = File(...)):
                     "brandName": med.brand_name,
                     "genericName": med.generic,
                     "strength": strength_display,
+                    "dosageForm": s.detected_dosage_form or med.dosage_form or "Tablet",
                     "manufacturer": med.manufacturer or "Bangladesh Pharma",
                     "confidence": conf,
                     "x": x_pct,
@@ -273,6 +279,22 @@ async def scan_medicine_strips(file: UploadFile = File(...)):
                     "dosageBangla": dosage_bn,
                     "dosageEnglish": dosage_en,
                     "timingTag": timing_tag,
+                    "databaseRecord": {
+                        "brand_id": med.brand_id,
+                        "brand_name": med.brand_name,
+                        "type": "allopathic",
+                        "dosage_form": s.detected_dosage_form or med.dosage_form,
+                        "generic": med.generic,
+                        "manufacturer": med.manufacturer,
+                        "package_container": s.extracted_strength or med.package_container,
+                        "drug_class": med.drug_class,
+                        "indication": med.indication,
+                        "dosage_description": med.dosage_description,
+                        "interaction_description": med.interaction_description,
+                        "side_effects_description": med.side_effects_description,
+                        "pregnancy_and_lactation_description": med.pregnancy_and_lactation_description,
+                        "beginner_summary": med.beginner_summary,
+                    },
                 }
             )
 

@@ -1,9 +1,27 @@
+export interface MedicineDatabaseRecord {
+  brand_id: number;
+  brand_name: string;
+  type: string | null;
+  dosage_form: string | null;
+  generic: string;
+  manufacturer: string | null;
+  package_container: string | null;
+  drug_class: string | null;
+  indication: string | null;
+  dosage_description: string | null;
+  interaction_description: string | null;
+  side_effects_description: string | null;
+  pregnancy_and_lactation_description: string | null;
+  beginner_summary?: string | null;
+}
+
 export interface BoundingBox {
   id: string;
   label: string;
   brandName: string;
   genericName: string;
   strength: string;
+  dosageForm?: string;
   manufacturer: string;
   confidence: number;
   // Normalized coordinates (0-100 percentage)
@@ -16,6 +34,7 @@ export interface BoundingBox {
   dosageBangla: string;
   dosageEnglish: string;
   timingTag: string;
+  databaseRecord?: MedicineDatabaseRecord;
 }
 
 export interface SafetyAlert {
