@@ -1,0 +1,115 @@
+"use client";
+
+import React from "react";
+import Image from "next/image";
+import { Check, Pill, Globe, MessageCircle, Share2, Shield } from "lucide-react";
+
+export function Footer() {
+  return (
+    <footer
+      id="footer"
+      className="max-w-5xl w-full mx-auto px-4 sm:px-6 pt-12 pb-8 text-[#46737a]"
+    >
+      {/* 4-Column Footer with Vertical Dashed Dividers */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8 pb-10 border-b border-teal-300/70">
+        {/* Column 1: Contact + User's Uploaded Logo */}
+        <div className="space-y-3 lg:pr-4">
+          <h4 className="font-bold text-sm text-[#09353c]">Contact</h4>
+          <div className="flex items-center gap-2.5 pt-1">
+            <div className="relative size-9 rounded-xl overflow-hidden bg-white shadow-xs border border-white shrink-0">
+              <Image
+                src="/logo.jpg"
+                alt="OushudhCheck Logo"
+                fill
+                className="object-cover"
+              />
+            </div>
+            <p className="font-extrabold text-base text-[#09353c]">
+              Oushudh<span className="text-[#0ea86b]">Check</span>
+            </p>
+          </div>
+          <p className="text-xs text-[#46737a] leading-relaxed">
+            Multi-Strip Medicine Safety Scanner &amp; Bangla Voice Assistant.
+            CoU AI Hackathon 2026.
+          </p>
+        </div>
+
+        {/* Column 2: Service */}
+        <div className="space-y-2.5 lg:border-l lg:border-dashed lg:border-teal-300/80 lg:pl-6">
+          <h4 className="font-bold text-sm text-[#09353c]">Service</h4>
+          <ul className="space-y-2 text-xs text-[#46737a]">
+            <li className="flex items-center gap-2">
+              <Check className="size-3.5 text-[#0ea86b]" />
+              <span>YOLO26 Strip Vision</span>
+            </li>
+            <li className="flex items-center gap-2">
+              <Check className="size-3.5 text-[#0ea86b]" />
+              <span>PaddleOCR Foil Reader</span>
+            </li>
+            <li className="flex items-center gap-2">
+              <Check className="size-3.5 text-[#0ea86b]" />
+              <span>21K+ BD Generic Index</span>
+            </li>
+            <li className="flex items-center gap-2">
+              <Check className="size-3.5 text-[#0ea86b]" />
+              <span>Duplicate Overdose Check</span>
+            </li>
+          </ul>
+        </div>
+
+        {/* Column 3: Service */}
+        <div className="space-y-2.5 lg:border-l lg:border-dashed lg:border-teal-300/80 lg:pl-6">
+          <h4 className="font-bold text-sm text-[#09353c]">Service</h4>
+          <ul className="space-y-2 text-xs text-[#46737a]">
+            <li className="flex items-center gap-2">
+              <Check className="size-3.5 text-[#0ea86b]" />
+              <span>DrugBank DDI Graph</span>
+            </li>
+            <li className="flex items-center gap-2">
+              <Check className="size-3.5 text-[#0ea86b]" />
+              <span>Qwen2.5 Bangla SLM</span>
+            </li>
+            <li className="flex items-center gap-2">
+              <Check className="size-3.5 text-[#0ea86b]" />
+              <span>Bangla Voice Readout</span>
+            </li>
+            <li className="flex items-center gap-2">
+              <Check className="size-3.5 text-[#0ea86b]" />
+              <span>Telegram Voice Bot</span>
+            </li>
+          </ul>
+        </div>
+
+        {/* Column 4: Social Icons & Hotline Number */}
+        <div className="space-y-4 lg:border-l lg:border-dashed lg:border-teal-300/80 lg:pl-6">
+          <div className="flex items-center gap-2.5">
+            {[Globe, MessageCircle, Share2, Shield, Pill].map((Icon, idx) => (
+              <span
+                key={idx}
+                className="flex items-center justify-center size-7 rounded-full bg-[#0b5563] text-white hover:bg-[#0ea86b] transition cursor-pointer"
+              >
+                <Icon className="size-3.5" />
+              </span>
+            ))}
+          </div>
+          <div>
+            <p className="text-xs text-[#46737a]">Emergency Hotline</p>
+            <p className="text-lg font-extrabold tracking-tight text-[#09353c] mt-0.5">
+              16263 • 999-BD
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Bottom Copyright Bar */}
+      <div className="pt-6 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-[#46737a]">
+        <span>© 2026 OushudhCheck • CoU AI Hackathon</span>
+        <div className="flex items-center gap-4 font-semibold text-[#0b5563]">
+          <span>Next.js</span>
+          <span>YOLO26</span>
+          <span>Bangla TTS</span>
+        </div>
+      </div>
+    </footer>
+  );
+}
