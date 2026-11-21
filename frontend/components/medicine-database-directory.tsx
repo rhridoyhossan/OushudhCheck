@@ -171,10 +171,7 @@ export function MedicineDatabaseDirectory() {
         </h1>
         <p className="text-sm text-[#46737a] mt-2">
           Connected live to{" "}
-          <code className="font-mono text-xs bg-white/80 px-2 py-0.5 rounded-md text-[#0b5563]">
-            data/processed/medicines.db
-          </code>{" "}
-          — search any brand, generic chemical, manufacturer, or indication.
+           search any brand, generic chemical, manufacturer, or indication.
         </p>
       </div>
 
