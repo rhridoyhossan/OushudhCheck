@@ -1,41 +1,53 @@
 "use client";
 
 import React, { useEffect, useRef } from "react";
-import { usePathname } from "next/navigation";
 import Image from "next/image";
 import gsap from "gsap";
 
 export function PageTransition({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
   const contentRef = useRef<HTMLDivElement | null>(null);
   const curtainRef = useRef<HTMLDivElement | null>(null);
   const logoRef = useRef<HTMLDivElement | null>(null);
   const brandRef = useRef<HTMLDivElement | null>(null);
   const mottoRef = useRef<HTMLParagraphElement | null>(null);
-  const isFirstLoadRef = useRef(true);
+  const hasPlayedInitialIntroRef = useRef(false);
 
+  // Run ONLY once on the very first website load (never on route/link changes like Overview -> Database)
   useEffect(() => {
     const curtain = curtainRef.current;
     if (!curtain) return;
 
-    const isInitial = isFirstLoadRef.current;
-    isFirstLoadRef.current = false;
-
-    if (!isInitial) {
-      window.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior });
+    // If intro has already played in this browser tab session, hide immediately so website opens right away
+    try {
+      if (
+        hasPlayedInitialIntroRef.current ||
+        window.sessionStorage.getItem("oushudhcheck_intro_seen") === "1"
+      ) {
+        gsap.set(curtain, {
+          autoAlpha: 0,
+          pointerEvents: "none",
+          display: "none",
+        });
+        return;
+      }
+      window.sessionStorage.setItem("oushudhcheck_intro_seen", "1");
+    } catch {
+      // sessionStorage unavailable
     }
 
-    const enterDuration = isInitial ? 0.42 : 0.28;
-    const holdDelay = isInitial ? 0.28 : 0.16;
-    const liftDuration = isInitial ? 0.62 : 0.5;
+    hasPlayedInitialIntroRef.current = true;
 
-    gsap.killTweensOf([
-      curtain,
-      logoRef.current,
-      brandRef.current,
-      mottoRef.current,
-      contentRef.current,
-    ]);
+    // Failsafe timer: guarantee curtain always clears within 1.8s even if tab was backgrounded
+    const safetyTimer = window.setTimeout(() => {
+      if (curtainRef.current) {
+        curtainRef.current.style.display = "none";
+        curtainRef.current.style.pointerEvents = "none";
+      }
+    }, 1800);
+
+    const enterDuration = 0.42;
+    const holdDelay = 0.28;
+    const liftDuration = 0.62;
 
     gsap.set(curtain, {
       yPercent: 0,
@@ -45,7 +57,12 @@ export function PageTransition({ children }: { children: React.ReactNode }) {
 
     const tl = gsap.timeline({
       onComplete: () => {
-        gsap.set(curtain, { autoAlpha: 0, pointerEvents: "none" });
+        window.clearTimeout(safetyTimer);
+        gsap.set(curtain, {
+          autoAlpha: 0,
+          pointerEvents: "none",
+          display: "none",
+        });
       },
     });
 
@@ -105,14 +122,15 @@ export function PageTransition({ children }: { children: React.ReactNode }) {
       : null;
 
     return () => {
+      window.clearTimeout(safetyTimer);
       tl.kill();
       contentTween?.kill();
     };
-  }, [pathname]);
+  }, []);
 
   return (
     <>
-      {/* Always-mounted Curtain Overlay (never misses ref on route switch) */}
+      {/* First-Load Only Intro Curtain Overlay */}
       <div
         ref={curtainRef}
         aria-hidden="true"

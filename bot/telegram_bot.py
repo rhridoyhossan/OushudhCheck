@@ -430,6 +430,12 @@ class OushudhCheckTelegramBot:
                         "getUpdates",
                         json={"offset": self.offset, "timeout": 25},
                     )
+                    if not data.get("ok") and data.get("error_code") == 409:
+                        logger.warning(
+                            "[DEV-BOT] Another Telegram bot instance is already polling this token (409 Conflict). Backing off for 15s..."
+                        )
+                        await asyncio.sleep(15)
+                        continue
                     for upd in data.get("result", []):
                         self.offset = int(upd["update_id"]) + 1
                         msg: Optional[Dict[str, Any]] = upd.get("message")

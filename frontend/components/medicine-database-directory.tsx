@@ -49,26 +49,48 @@ const DOSAGE_FORMS = [
 
 /**
  * Parses a continuous clinical text block (such as `dosage_description` from medicines.db)
- * into clean, well-spaced sections (`{ label, content }`) so multiple sub-headings
- * (e.g. "Adult:", "Children:", "Tablet :", "Healing of Erosive Esophagitis :")
- * are not mashed together into a single paragraph.
+ * into clean, well-spaced sections (`{ label, content }`).
+ * Handles:
+ *  - Nested headings like "Tablet: Adult : 1-2 tablets..." -> "Tablet • Adult"
+ *  - Missing spaces after periods like ").The tablet"
+ *  - Consecutive labels without periods like "0.5 ml (40 mg) 4 to 11 months : 1.0 ml"
  */
 function parseStructuredClinicalText(raw: string): Array<{
   label: string | null;
   content: string;
 }> {
-  const cleaned = raw.replace(/\r\n/g, "\n").trim();
+  let cleaned = raw
+    .replace(/\r\n/g, "\n")
+    .replace(/\u00a0/g, " ")
+    // Fix OCR typo in database like "1 yea r:" -> "1 year:"
+    .replace(/\byea\s+r\s*:/gi, "year:")
+    // Ensure a space after period/closing-paren when followed immediately by a capital letter
+    .replace(/([.)।])\s*([A-Z\u0980-\u09FF])/g, "$1 $2")
+    .trim();
+
   if (!cleaned) return [];
 
-  // Insert a newline before sub-heading patterns that follow a period, Dari (।), or start of sentence:
-  // e.g. ". Adult & Children over 12 years:" or "। ইনজেকশন হিসেবে:" or ". Film coated tablet :"
-  const withLineBreaks = cleaned.replace(
-    /([.।!?])\s+([A-Z0-9\u0980-\u09FF][^:.।!?]{1,65}?)\s*:\s+/g,
+  // 1. Collapse double/nested headings like "Tablet: Adult :" or "Syrup/Suspension: Children under 3 months :"
+  // into a single combined badge "Tablet • Adult:"
+  cleaned = cleaned.replace(
+    /([A-Z\u0980-\u09FF][A-Za-z0-9\u0980-\u09FF\s/()&-]{1,35}?)\s*:\s+([A-Z0-9\u0980-\u09FF][A-Za-z0-9\u0980-\u09FF\s/()&-]{1,42}?)\s*:\s+/g,
+    "\n$1 • $2: "
+  );
+
+  // 2. Break before any heading that follows a sentence end (. । ! ?)
+  cleaned = cleaned.replace(
+    /([.।!?])\s+([A-Z0-9\u0980-\u09FF][^:.।!?\n]{1,58}?)\s*:\s+/g,
     "$1\n$2: "
   );
 
-  // Also split if the very first phrase has a label: value followed by another label: value
-  const rawLines = withLineBreaks
+  // 3. Break before inline age/weight/form headings that follow a closing parenthesis or mg/ml unit without a period
+  // e.g. "0.5 ml (40 mg) 4 to 11 months : 1.0 ml (80 mg) 7 to 2 years : 1.5 ml"
+  cleaned = cleaned.replace(
+    /(\b(?:mg|gm|ml|daily|hours|day)\)?|\))\s+((?:Adults?|Children|Paediatric|Infant|Neonates?|[0-9]+\s*(?:to|-)\s*[0-9]+\s*(?:months?|years?)|[0-9]+\s*(?:months?|years?))[^:\n]{0,35}?)\s*:\s+/gi,
+    "$1\n$2: "
+  );
+
+  const rawLines = cleaned
     .split(/\n+/)
     .map((l) => l.trim())
     .filter(Boolean);
@@ -77,7 +99,7 @@ function parseStructuredClinicalText(raw: string): Array<{
 
   for (const line of rawLines) {
     const colonMatch = line.match(
-      /^([A-Z0-9\u0980-\u09FF][^:]{1,68}?)\s*:\s+(.+)$/
+      /^([A-Z0-9\u0980-\u09FF][^:]{1,72}?)\s*:\s+(.+)$/
     );
     if (colonMatch) {
       items.push({
@@ -101,17 +123,35 @@ export function MedicineDatabaseDirectory() {
   const [selectedForm, setSelectedForm] = useState("All");
   const [page, setPage] = useState(1);
   const [items, setItems] = useState<MedicineRecord[]>([]);
-  const [total, setTotal] = useState(21712);
+  const [total, setTotal] = useState(17191);
   const [totalPages, setTotalPages] = useState(1);
   const [stats, setStats] = useState({
-    totalBrands: 17191 ,
-    totalGenerics: 1661 ,
+    totalBrands: 17191,
+    totalGenerics: 1661,
   });
   const [isLoading, setIsLoading] = useState(true);
   const [savedBrands, setSavedBrands] = useState<Record<number, boolean>>({});
   const [activeMedicine, setActiveMedicine] = useState<MedicineRecord | null>(
     null
   );
+
+  // Lock background page scroll and allow Escape key to close modal cleanly
+  useEffect(() => {
+    if (!activeMedicine) return;
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setActiveMedicine(null);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = originalOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [activeMedicine]);
 
   // Debounce search input by 280ms
   useEffect(() => {
@@ -170,8 +210,8 @@ export function MedicineDatabaseDirectory() {
           Bangladeshi Medicine Database
         </h1>
         <p className="text-sm text-[#46737a] mt-3.5 leading-relaxed">
-          Connected live to{" "}
-           search any brand, generic chemical, manufacturer, or indication.
+          Search any commercial brand name, generic chemical ingredient,
+          manufacturer, or clinical indication.
         </p>
       </div>
 
@@ -188,7 +228,7 @@ export function MedicineDatabaseDirectory() {
               type="text"
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
-              placeholder="Search 17,191 + BD medicines (Napa, Ace, Seclo, Paracetamol, Square)..."
+              placeholder="Search 17,191+ BD medicines (Napa, Ace, Seclo, Paracetamol, Square)..."
               className="w-full bg-transparent text-xs sm:text-sm font-medium text-[#09353c] placeholder:text-[#46737a]/70 focus:outline-none"
             />
             {searchInput && (
@@ -238,7 +278,7 @@ export function MedicineDatabaseDirectory() {
             <strong className="text-[#09353c]">
               {total.toLocaleString()}
             </strong>{" "}
-            matching medicines from <code className="font-mono">medicines.db</code>
+            matching medicines
           </span>
           <span>
             Page <strong className="text-[#09353c]">{page}</strong> of{" "}
@@ -378,20 +418,23 @@ export function MedicineDatabaseDirectory() {
       </div>
 
       {/* =====================================================================
-          CLINICAL DETAIL MODAL (Well-spaced, structured Dosage & Administration)
+          CLINICAL DETAIL MODAL (Fixed Header + Smooth Inner Scroll Body)
          ===================================================================== */}
       {activeMedicine && (
         <div
+          data-lenis-prevent="true"
           onClick={() => setActiveMedicine(null)}
-          className="fixed inset-0 z-50 bg-[#09353c]/55 backdrop-blur-xs flex items-center justify-center p-4"
+          className="fixed inset-0 z-50 bg-[#09353c]/60 backdrop-blur-xs flex items-center justify-center p-4 sm:p-6"
         >
+          {/* Outer Modal Shell with overflow-hidden so rounded corners never glitch with scrollbar */}
           <div
+            data-lenis-prevent="true"
             onClick={(e) => e.stopPropagation()}
-            className="relative w-full max-w-2xl max-h-[86vh] overflow-y-auto rounded-[2.25rem] bg-white p-6 sm:p-8 shadow-2xl border border-teal-100 space-y-6"
+            className="relative w-full max-w-2xl max-h-[88vh] flex flex-col rounded-[2rem] bg-white shadow-2xl border border-teal-100 overflow-hidden"
           >
-            {/* Modal Header */}
-            <div className="flex items-start justify-between gap-4 border-b border-teal-100 pb-5">
-              <div className="space-y-1.5">
+            {/* Sticky Non-Scrolling Modal Header */}
+            <div className="shrink-0 flex items-start justify-between gap-4 border-b border-teal-100 bg-white px-6 py-5 sm:px-8">
+              <div className="space-y-1.5 min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 text-[#0ea86b] px-3 py-1 text-xs font-bold border border-emerald-200">
                     <Pill className="size-3.5" />
@@ -403,10 +446,10 @@ export function MedicineDatabaseDirectory() {
                     </span>
                   )}
                 </div>
-                <h2 className="text-2xl sm:text-3xl font-extrabold text-[#09353c] pt-1">
+                <h2 className="text-2xl sm:text-3xl font-extrabold text-[#09353c] pt-0.5 break-words">
                   {activeMedicine.brand_name}
                 </h2>
-                <p className="text-sm font-bold text-[#0d9488]">
+                <p className="text-sm font-bold text-[#0d9488] break-words">
                   Generic Compound: {activeMedicine.generic}
                 </p>
               </div>
@@ -414,141 +457,151 @@ export function MedicineDatabaseDirectory() {
               <button
                 type="button"
                 onClick={() => setActiveMedicine(null)}
-                className="flex items-center justify-center size-9 rounded-full bg-[#f2f9f8] hover:bg-teal-100 text-[#09353c] transition cursor-pointer shrink-0"
+                aria-label="Close modal"
+                className="flex items-center justify-center size-9 rounded-full bg-[#f2f9f8] hover:bg-[#0ea86b] text-[#09353c] hover:text-white transition cursor-pointer shrink-0"
               >
                 <X className="size-4" />
               </button>
             </div>
 
-            {/* Top 2-Column Metadata Cards */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">
-              <div className="rounded-2xl bg-[#f2f9f8] p-4 border border-teal-100/80 space-y-1">
-                <span className="font-bold text-[#46737a] flex items-center gap-1.5 uppercase tracking-wider text-[10px]">
-                  <Building2 className="size-3.5 text-[#0ea86b]" />
-                  Manufacturer
-                </span>
-                <p className="font-extrabold text-sm text-[#09353c]">
-                  {activeMedicine.manufacturer || "N/A"}
-                </p>
+            {/* Scrollable Modal Body — data-lenis-prevent allows mouse wheel scrolling inside modal */}
+            <div
+              data-lenis-prevent="true"
+              onWheel={(e) => e.stopPropagation()}
+              onTouchMove={(e) => e.stopPropagation()}
+              className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-6 py-6 sm:px-8 space-y-5"
+            >
+              {/* Top 2-Column Metadata Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">
+                <div className="rounded-2xl bg-[#f2f9f8] p-4 border border-teal-100/80 space-y-1">
+                  <span className="font-bold text-[#46737a] flex items-center gap-1.5 uppercase tracking-wider text-[10px]">
+                    <Building2 className="size-3.5 text-[#0ea86b]" />
+                    Manufacturer
+                  </span>
+                  <p className="font-extrabold text-sm text-[#09353c]">
+                    {activeMedicine.manufacturer || "N/A"}
+                  </p>
+                </div>
+
+                <div className="rounded-2xl bg-[#f2f9f8] p-4 border border-teal-100/80 space-y-1">
+                  <span className="font-bold text-[#46737a] flex items-center gap-1.5 uppercase tracking-wider text-[10px]">
+                    <Stethoscope className="size-3.5 text-[#0ea86b]" />
+                    Pack &amp; Container
+                  </span>
+                  <p className="font-extrabold text-sm text-[#09353c]">
+                    {activeMedicine.package_container ||
+                      `${activeMedicine.dosage_form || "Standard"} Pack`}
+                  </p>
+                </div>
               </div>
 
-              <div className="rounded-2xl bg-[#f2f9f8] p-4 border border-teal-100/80 space-y-1">
-                <span className="font-bold text-[#46737a] flex items-center gap-1.5 uppercase tracking-wider text-[10px]">
-                  <Stethoscope className="size-3.5 text-[#0ea86b]" />
-                  Pack &amp; Pricing Info
-                </span>
-                <p className="font-extrabold text-sm text-[#09353c]">
-                  {activeMedicine.package_container || "Standard Pack"}
-                </p>
-              </div>
+              {/* Beginner-Friendly Summary Highlight Card */}
+              {activeMedicine.beginner_summary && (
+                <div className="rounded-3xl bg-gradient-to-br from-[#f2f9f8] via-emerald-50/60 to-[#f2f9f8] p-5 border-2 border-[#0ea86b]/30 shadow-xs space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs font-extrabold uppercase tracking-wider text-[#0ea86b] flex items-center gap-1.5">
+                      <Pill className="size-4 text-[#0ea86b]" />
+                      Easy Summary (Beginner-Friendly Guide)
+                    </p>
+                    <span className="rounded-full bg-white px-2.5 py-0.5 text-[10px] font-bold text-[#0b5563] border border-teal-100 shrink-0">
+                      Simple Guide
+                    </span>
+                  </div>
+                  <p className="text-xs sm:text-sm font-medium text-[#09353c] leading-relaxed">
+                    {activeMedicine.beginner_summary}
+                  </p>
+                </div>
+              )}
+
+              {/* Primary Indication */}
+              {activeMedicine.indication && (
+                <div className="rounded-2xl bg-[#f2f9f8]/60 p-4 border border-teal-100 space-y-1.5">
+                  <p className="text-xs font-extrabold uppercase tracking-wider text-[#0b5563] flex items-center gap-1.5">
+                    <Activity className="size-3.5 text-[#0ea86b]" />
+                    Primary Indication
+                  </p>
+                  <p className="text-xs sm:text-sm font-semibold text-[#09353c] leading-relaxed">
+                    {activeMedicine.indication}
+                  </p>
+                </div>
+              )}
+
+              {/* Structured Dosage & Administration with Separated Sub-Cards */}
+              {activeMedicine.dosage_description && (
+                <div className="rounded-3xl bg-white p-5 border border-teal-200/80 shadow-2xs space-y-3.5">
+                  <div className="flex items-center justify-between border-b border-teal-100 pb-2.5">
+                    <p className="text-xs font-extrabold uppercase tracking-wider text-[#0ea86b] flex items-center gap-1.5">
+                      <Clock className="size-4 text-[#0ea86b]" />
+                      Dosage &amp; Administration
+                    </p>
+                    <span className="text-[10px] font-semibold text-[#46737a] bg-[#f2f9f8] px-2.5 py-0.5 rounded-full">
+                      Clinical Regimen
+                    </span>
+                  </div>
+
+                  <div className="space-y-2.5">
+                    {parseStructuredClinicalText(
+                      activeMedicine.dosage_description
+                    ).map((item, idx) => (
+                      <div
+                        key={idx}
+                        className="rounded-2xl bg-[#f2f9f8]/90 p-3.5 border border-teal-100/80 space-y-1.5"
+                      >
+                        {item.label && (
+                          <span className="inline-block rounded-lg bg-[#0b5563] text-white px-2.5 py-0.5 text-[11px] font-bold">
+                            {item.label}
+                          </span>
+                        )}
+                        <p className="text-xs sm:text-sm text-[#09353c] leading-relaxed break-words">
+                          {item.content}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Drug-Drug Interactions */}
+              {activeMedicine.interaction_description && (
+                <div className="rounded-3xl bg-amber-50/70 p-5 border border-amber-200/90 space-y-2.5">
+                  <p className="text-xs font-extrabold uppercase tracking-wider text-amber-800 flex items-center gap-1.5">
+                    <AlertTriangle className="size-4 text-amber-600" />
+                    Drug-Drug Interactions
+                  </p>
+                  <div className="space-y-2">
+                    {parseStructuredClinicalText(
+                      activeMedicine.interaction_description
+                    ).map((item, idx) => (
+                      <div
+                        key={idx}
+                        className="rounded-2xl bg-white/85 p-3 border border-amber-200/60 space-y-1"
+                      >
+                        {item.label && (
+                          <span className="inline-block rounded-md bg-amber-100 text-amber-900 px-2 py-0.5 text-[11px] font-bold">
+                            {item.label}
+                          </span>
+                        )}
+                        <p className="text-xs sm:text-sm text-amber-950/90 leading-relaxed break-words">
+                          {item.content}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Side Effects */}
+              {activeMedicine.side_effects_description && (
+                <div className="rounded-3xl bg-white p-5 border border-teal-100 space-y-2.5">
+                  <p className="text-xs font-extrabold uppercase tracking-wider text-[#0b5563]">
+                    Side Effects &amp; Precautions
+                  </p>
+                  <p className="text-xs sm:text-sm text-[#46737a] leading-relaxed break-words">
+                    {activeMedicine.side_effects_description}
+                  </p>
+                </div>
+              )}
             </div>
-
-            {/* Beginner-Friendly Summary Highlight Card */}
-            {activeMedicine.beginner_summary && (
-              <div className="rounded-3xl bg-gradient-to-br from-[#f2f9f8] via-emerald-50/60 to-[#f2f9f8] p-5 border-2 border-[#0ea86b]/30 shadow-xs space-y-2">
-                <div className="flex items-center justify-between">
-                  <p className="text-xs font-extrabold uppercase tracking-wider text-[#0ea86b] flex items-center gap-1.5">
-                    <Pill className="size-4 text-[#0ea86b]" />
-                    সহজ বাংলা সারসংক্ষেপ (Bangla Summary)
-                  </p>
-                  <span className="rounded-full bg-white px-2.5 py-0.5 text-[10px] font-bold text-[#0b5563] border border-teal-100">
-                    সহজ গাইড
-                  </span>
-                </div>
-                <p className="text-xs sm:text-sm font-medium text-[#09353c] leading-relaxed">
-                  {activeMedicine.beginner_summary}
-                </p>
-              </div>
-            )}
-
-            {/* Primary Indication */}
-            {activeMedicine.indication && (
-              <div className="rounded-2xl bg-[#f2f9f8]/60 p-4 border border-teal-100 space-y-1.5">
-                <p className="text-xs font-extrabold uppercase tracking-wider text-[#0b5563] flex items-center gap-1.5">
-                  <Activity className="size-3.5 text-[#0ea86b]" />
-                  Primary Indication
-                </p>
-                <p className="text-xs sm:text-sm font-semibold text-[#09353c] leading-relaxed">
-                  {activeMedicine.indication}
-                </p>
-              </div>
-            )}
-
-            {/* Structured Dosage & Administration with Separated Sub-Cards */}
-            {activeMedicine.dosage_description && (
-              <div className="rounded-3xl bg-white p-5 border border-teal-200/80 shadow-2xs space-y-3.5">
-                <div className="flex items-center justify-between border-b border-teal-100 pb-2.5">
-                  <p className="text-xs font-extrabold uppercase tracking-wider text-[#0ea86b] flex items-center gap-1.5">
-                    <Clock className="size-4 text-[#0ea86b]" />
-                    Dosage &amp; Administration
-                  </p>
-                  <span className="text-[10px] font-semibold text-[#46737a] bg-[#f2f9f8] px-2.5 py-0.5 rounded-full">
-                    Clinical Regimen
-                  </span>
-                </div>
-
-                <div className="space-y-3">
-                  {parseStructuredClinicalText(
-                    activeMedicine.dosage_description
-                  ).map((item, idx) => (
-                    <div
-                      key={idx}
-                      className="rounded-2xl bg-[#f2f9f8]/80 p-3.5 border border-teal-100/70 space-y-1.5"
-                    >
-                      {item.label && (
-                        <span className="inline-block rounded-lg bg-[#0b5563] text-white px-2.5 py-0.5 text-[11px] font-bold">
-                          {item.label}
-                        </span>
-                      )}
-                      <p className="text-xs sm:text-sm text-[#09353c] leading-relaxed">
-                        {item.content}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Drug-Drug Interactions */}
-            {activeMedicine.interaction_description && (
-              <div className="rounded-3xl bg-amber-50/70 p-5 border border-amber-200/90 space-y-2.5">
-                <p className="text-xs font-extrabold uppercase tracking-wider text-amber-800 flex items-center gap-1.5">
-                  <AlertTriangle className="size-4 text-amber-600" />
-                  Drug-Drug Interactions
-                </p>
-                <div className="space-y-2">
-                  {parseStructuredClinicalText(
-                    activeMedicine.interaction_description
-                  ).map((item, idx) => (
-                    <div
-                      key={idx}
-                      className="rounded-2xl bg-white/80 p-3 border border-amber-200/60 space-y-1"
-                    >
-                      {item.label && (
-                        <span className="inline-block rounded-md bg-amber-100 text-amber-900 px-2 py-0.5 text-[11px] font-bold">
-                          {item.label}
-                        </span>
-                      )}
-                      <p className="text-xs sm:text-sm text-amber-950/90 leading-relaxed">
-                        {item.content}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Side Effects */}
-            {activeMedicine.side_effects_description && (
-              <div className="rounded-3xl bg-white p-5 border border-teal-100 space-y-2.5">
-                <p className="text-xs font-extrabold uppercase tracking-wider text-[#0b5563]">
-                  Side Effects &amp; Precautions
-                </p>
-                <p className="text-xs sm:text-sm text-[#46737a] leading-relaxed">
-                  {activeMedicine.side_effects_description}
-                </p>
-              </div>
-            )}
           </div>
         </div>
       )}

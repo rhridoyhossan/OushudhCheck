@@ -36,7 +36,7 @@ const TEAM_MEMBERS: TeamMember[] = [
     email: "jubayer.ahm17@gmail.com",
     githubUrl: "https://github.com/Jubayerx17",
     githubUsername: "Jubayerx17",
-    bio: "Architecting OushudhCheck's Next.js clinical interface, multi-strip vision UX, and accessible Bangla voice assistant.",
+    bio: "Building OushudhCheck's Next.js frontend and intuitive AI-powered medicine scanning interface.",
   },
   {
     name: "Ridoy Hossan Rony",
