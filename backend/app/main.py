@@ -1,6 +1,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.routes import router as api_router
+
+try:
+    from backend.app.api.routes import router as api_router
+except ImportError:
+    from app.api.routes import router as api_router  # type: ignore
 
 app = FastAPI(
     title="OushudhCheck FastAPI Backend",

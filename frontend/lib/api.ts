@@ -18,7 +18,7 @@ export async function analyzeMedicineImage(
     formData.append("file", fileOrBlob, "tabletop_strips.jpg");
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3500);
+    const timeout = setTimeout(() => controller.abort(), 25000);
 
     const response = await fetch(`${API_BASE_URL}/scan`, {
       method: "POST",

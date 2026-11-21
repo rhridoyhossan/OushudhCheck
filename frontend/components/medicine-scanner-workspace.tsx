@@ -109,14 +109,39 @@ export function MedicineScannerWorkspace() {
     setImagePreview(null);
   };
 
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
   const toggleBanglaVoice = () => {
-    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+    if (typeof window === "undefined") return;
     if (isPlayingVoice) {
-      window.speechSynthesis.cancel();
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.currentTime = 0;
+      }
+      if ("speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
       setIsPlayingVoice(false);
       return;
     }
 
+    if (analysis.audioUrl) {
+      const baseUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1").replace(/\/api\/v1\/?$/, "");
+      const fullAudioUrl = analysis.audioUrl.startsWith("http")
+        ? analysis.audioUrl
+        : `${baseUrl}${analysis.audioUrl}`;
+      const audio = new Audio(fullAudioUrl);
+      audioRef.current = audio;
+      setIsPlayingVoice(true);
+      audio.onended = () => setIsPlayingVoice(false);
+      audio.onerror = () => {
+        setIsPlayingVoice(false);
+      };
+      audio.play().catch(() => setIsPlayingVoice(false));
+      return;
+    }
+
+    if (!("speechSynthesis" in window)) return;
     setIsPlayingVoice(true);
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(analysis.banglaVoiceScript);

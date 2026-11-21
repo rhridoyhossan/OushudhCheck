@@ -47,13 +47,11 @@ def build_database() -> None:
     df = pd.read_csv(CSV_PATH, low_memory=False)
     df.columns = [c.strip() for c in df.columns]
 
-    # Strip strings first, then convert empty/placeholder cells to NaN (stored as SQL NULL)
     for col in df.select_dtypes(include=["object", "string"]).columns:
         df[col] = df[col].str.strip()
 
     df = df.replace(list(NULL_TOKENS), np.nan)
 
-    # Remove duplicated "... Read more " preview prefix in indication_description
     if "indication_description" in df.columns:
         df["indication_description"] = df["indication_description"].str.replace(
             r"^.*?\.\.\.\s*Read more\s+", "", regex=True
@@ -62,12 +60,10 @@ def build_database() -> None:
     df = df.dropna(subset=["brand_name", "generic"]).copy()
     df["brand_id"] = df["brand_id"].astype(int)
 
-    # Helper columns for fast lowercase lookups
     df["brand_lower"] = df["brand_name"].str.lower()
     df["generic_lower"] = df["generic"].str.lower()
 
     brands_df = df[BRAND_COLS].copy()
-    # groupby().first() picks the first non-null value for each column per generic
     generics_df = df[GENERIC_COLS].groupby("generic_lower", as_index=False).first()
 
     if DB_PATH.exists():
@@ -83,7 +79,6 @@ def build_database() -> None:
         cur.execute("CREATE INDEX idx_brands_generic ON brands(generic_lower)")
         cur.execute("CREATE UNIQUE INDEX idx_generics_lower ON generics(generic_lower)")
 
-        # Single-table view so callers can query `SELECT * FROM medicines` directly
         cur.execute(
             """
             CREATE VIEW medicines AS
@@ -113,6 +108,27 @@ def build_database() -> None:
             LEFT JOIN generics g ON b.generic_lower = g.generic_lower
             """
         )
+
+        cur.execute(
+            """
+            CREATE VIRTUAL TABLE medicines_fts USING fts5(
+                brand_id UNINDEXED,
+                brand_name,
+                generic,
+                dosage_form,
+                manufacturer,
+                tokenize='unicode61'
+            )
+            """
+        )
+        cur.execute(
+            """
+            INSERT INTO medicines_fts (brand_id, brand_name, generic, dosage_form, manufacturer)
+            SELECT brand_id, brand_name, generic, COALESCE(dosage_form, ''), COALESCE(manufacturer, '')
+            FROM medicines
+            """
+        )
+
         conn.commit()
         conn.execute("VACUUM")
 
