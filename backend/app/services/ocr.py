@@ -512,6 +512,7 @@ class MedicineMatcher:
                     manufacturer=mfg,
                     drug_class=g_row["drug_class"] if g_row else None,
                     indication=g_row["indication"] if g_row else None,
+                    use_llm=False,
                 )
                 v_entry = _BrandIndexEntry(
                     brand_id=vid,
@@ -598,6 +599,7 @@ class MedicineMatcher:
                     drug_class=row["drug_class"],
                     indication=row["indication"],
                     strength=row["package_container"],
+                    use_llm=False,
                 ),
             )
 
@@ -868,6 +870,7 @@ class MedicineMatcher:
                             drug_class=row["drug_class"],
                             indication=row["indication"],
                             strength=row["package_container"],
+                            use_llm=False,
                         ),
                     )
                 )
@@ -1029,7 +1032,7 @@ def _box_center(b: Optional[BoundingBox], default_w: int = 720, default_h: int =
 
 class MedicineStripScanner:
     """
-    Combines all 4 AI components from the OushudhCheck Hackathon Proposal:
+    Combines all 4 AI components of OushudhCheck:
     1. `StripDetector` (YOLO26n/s ONNX via ONNXRuntime + CLAHE foil contrast enhancement)
     2. `OCREngine` (PaddleOCR PP-OCRv6 ONNX via RapidOCR)
     3. `MedicineMatcher` (RapidFuzz + SQLite medicines.db)

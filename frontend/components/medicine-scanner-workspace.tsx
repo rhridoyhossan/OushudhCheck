@@ -68,8 +68,8 @@ const LIVE_SCAN_STAGES = [
   },
   {
     id: 5,
-    labelBn: "ধাপ ৫/৫: Safety SLM বাংলা সারসংক্ষেপ ও ডুপ্লিকেট যাচাই চলছে...",
-    labelEn: "Generating Bangla summary & evaluating pairwise conflict rules",
+    labelBn: "ধাপ ৫/৫: Gemma 3 1B বাংলা সারসংক্ষেপ ও ডুপ্লিকেট যাচাই চলছে...",
+    labelEn: "Generating Bangla summary via Gemma 3 1B SLM & evaluating pairwise conflict rules",
     pct: 96,
   },
 ];
@@ -1152,9 +1152,9 @@ export function MedicineScannerWorkspace() {
                         {banglaSummary && (
                           <div className="rounded-xl bg-[#f2f9f8]/90 p-2.5 border border-teal-100/70 mt-1.5">
                             <span className="block text-[10px] font-extrabold text-[#0ea86b] mb-0.5">
-                              সহজ বাংলা সারসংক্ষেপ:
+                              সহজ বাংলা সারসংক্ষেপ (Gemma 3 1B):
                             </span>
-                            <p className="text-[11px] text-[#09353c] line-clamp-3 leading-relaxed">
+                            <p className="text-[11px] text-[#09353c] leading-relaxed whitespace-pre-line">
                               {banglaSummary}
                             </p>
                           </div>
@@ -1289,10 +1289,10 @@ export function MedicineScannerWorkspace() {
                     সহজ বাংলা সারসংক্ষেপ (Bangla Summary)
                   </p>
                   <span className="rounded-full bg-white px-2.5 py-0.5 text-[10px] font-bold text-[#0b5563] border border-teal-100">
-                    Safety SLM
+                    Gemma 3 1B SLM
                   </span>
                 </div>
-                <p className="text-xs sm:text-sm font-medium text-[#09353c] leading-relaxed">
+                <p className="text-xs sm:text-sm font-medium text-[#09353c] leading-relaxed whitespace-pre-line">
                   {activeMedicine.beginner_summary}
                 </p>
               </div>

@@ -7,3 +7,5 @@ ml_training
 test
 *.pdf
 .env
+models/
+*.gguf

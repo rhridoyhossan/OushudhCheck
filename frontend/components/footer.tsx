@@ -100,7 +100,7 @@ export function Footer() {
             </li>
             <li className="flex items-center gap-2">
               <Check className="size-3.5 text-[#0ea86b]" />
-              <span>Qwen2.5 Bangla SLM</span>
+              <span>Gemma 3 1B Bangla SLM</span>
             </li>
             <li className="flex items-center gap-2">
               <Check className="size-3.5 text-[#0ea86b]" />

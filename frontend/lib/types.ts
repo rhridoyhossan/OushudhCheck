@@ -82,6 +82,7 @@ export interface TransparencyEvidenceItem {
   };
   cropThumbnail: string;
   preprocessedThumbnail: string;
+  banglaSummary?: string;
 }
 
 export interface SafetyEdgeItem {

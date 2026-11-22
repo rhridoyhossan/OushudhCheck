@@ -94,7 +94,7 @@ function deriveInspectorData(
     {
       id: "reasoning",
       label: "Reasoning",
-      engine: "Quantized Safety SLM + Pairwise Conflict Graph",
+      engine: "Gemma 3 1B-Q4_K_M Bangla SLM + Pairwise Conflict Graph",
       durationMs: m.slmSafetyReasoningMs,
       color: "#7c3aed",
     },
@@ -137,6 +137,7 @@ function deriveInspectorData(
       },
       cropThumbnail: "",
       preprocessedThumbnail: "",
+      banglaSummary: s.databaseRecord?.beginner_summary || s.dosageBangla,
     })
   );
 
@@ -159,7 +160,7 @@ function deriveInspectorData(
     totalTurnaroundMs: totalMs,
     activeDetector: "YOLO26n ONNX (CPUExecutionProvider)",
     activeOcrEngine: "PaddleOCR PP-OCRv6 (RapidOCR ONNX)",
-    activeReasoningMode: "Qwen2.5-1.5B-INT4 Grounded Bangla SLM",
+    activeReasoningMode: "Gemma 3 1B-Q4_K_M Fine-Tuned Bangla SLM",
     stages,
     evidenceItems,
     safetyEdges,
@@ -549,6 +550,22 @@ export function AITransparencyInspector({
                     {ev.rawOcrText || "(No raw OCR lines)"}
                   </pre>
                 </div>
+
+                {/* Live Gemma 3 1B Bangla AI Result */}
+                {ev.banglaSummary && (
+                  <div className="rounded-2xl bg-white p-3.5 border border-[#0ea86b]/30 space-y-1.5">
+                    <div className="flex items-center justify-between text-[10px] font-extrabold text-[#0ea86b]">
+                      <span className="flex items-center gap-1 uppercase tracking-wider">
+                        <Sparkles className="size-3" />
+                        Gemma 3 1B AI বাংলা সারসংক্ষেপ
+                      </span>
+                      <span className="font-mono text-[#0b5563]">Q4_K_M</span>
+                    </div>
+                    <p className="text-[11px] text-[#09353c] leading-relaxed whitespace-pre-line">
+                      {ev.banglaSummary}
+                    </p>
+                  </div>
+                )}
               </div>
             );
           })}

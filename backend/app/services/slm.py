@@ -1,7 +1,7 @@
 """
-Quantized Safety SLM & Mini AI Disambiguation Engine (Qwen2.5-1.5B / Llama-3.2-3B + Grounded Bangla Clinical NLG).
+Quantized Safety SLM & Mini AI Disambiguation Engine (Gemma 3 1B-Q4_K_M + Grounded Bangla Clinical NLG).
 
-Responsibilities (per OushudhCheck Hackathon Proposal Section 3.3):
+Responsibilities:
 1. Mini-AI OCR Candidate Re-Ranking & Context Disambiguation:
    - Eliminates torn-foil substring ghost matches (e.g., 'dipine' from 'Amlodipine', 'epam' from 'Diazepam').
    - Merges split multi-word brand boxes (e.g., 'Napa®' + 'Extra' -> 'Napa Extra').
@@ -13,23 +13,182 @@ Responsibilities (per OushudhCheck Hackathon Proposal Section 3.3):
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, OrderedDict
+from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
+import json
 import logging
 import os
 import re
+import textwrap
+import threading
+import urllib.error
+import urllib.request
 
 from rapidfuzz import fuzz
 
 try:
+    from backend.app.core.config import PROJECT_ROOT
     from backend.app.models.schemas import MedicineInfo, SafetyAlert, StripScanResult
 except ImportError:
+    from app.core.config import PROJECT_ROOT  # type: ignore
     from app.models.schemas import MedicineInfo, SafetyAlert, StripScanResult  # type: ignore
 
 logger = logging.getLogger("oushudhcheck.slm")
 
-SLM_MODEL_NAME = os.getenv("SLM_MODEL_NAME", "Qwen2.5-1.5B-Instruct-INT4")
-SLM_API_URL = os.getenv("SLM_API_URL", "").strip()
+SLM_MODEL_NAME = os.getenv("SLM_MODEL_NAME", "oushudhcheck-gemma3-1b")
+SLM_API_URL = os.getenv("SLM_API_URL", "http://127.0.0.1:8081/v1/chat/completions").strip()
+SLM_TIMEOUT_SEC = float(os.getenv("SLM_TIMEOUT_SEC", "30.0"))
+SLM_MAX_TOKENS = int(os.getenv("SLM_MAX_TOKENS", "768"))
+
+_DEFAULT_SYSTEM_PROMPT = (
+    "তুমি OushudhCheck মেডিকেল সহায়ক। শুধুমাত্র প্রদত্ত ডাটাবেস তথ্যের ভিত্তিতে "
+    "রোগীর জন্য ৩-৪ বাক্যে সহজ ও স্পষ্ট বাংলায় ওষুধটির কাজ, খাওয়ার নিয়ম ও সময় এবং "
+    "গুরুত্বপূর্ণ সতর্কতা লেখো। ওষুধের ব্র্যান্ড নাম, মাত্রা (যেমন 20 mg বা 500 mg + 65 mg) "
+    "এবং জেনেরিক উপাদানের নাম ডাটাবেসে যেভাবে ইংরেজিতে আছে ঠিক সেভাবেই অপরিবর্তিত রাখবে, "
+    "আর বাকি সম্পূর্ণ ব্যাখ্যা সহজ বাংলায় লিখবে। ডাটাবেসে নেই এমন কোনো মাত্রা, পার্শ্বপ্রতিক্রিয়া বা "
+    "সতর্কতা মনগড়াভাবে যোগ করবে না।"
+)
+
+
+def _load_trained_system_prompt() -> str:
+    prompt_file = PROJECT_ROOT / "models" / "system_prompt.txt"
+    if prompt_file.exists():
+        try:
+            txt = prompt_file.read_text(encoding="utf-8").strip()
+            if txt:
+                return txt
+        except OSError:
+            pass
+    return _DEFAULT_SYSTEM_PROMPT
+
+
+TRAINED_SYSTEM_PROMPT = _load_trained_system_prompt()
+_LAST_SLM_USED_LIVE = False
+_SLM_CACHE_MAX = 2048
+_SLM_CACHE: "OrderedDict[Tuple[str, ...], str]" = OrderedDict()
+_SLM_CACHE_LOCK = threading.Lock()
+
+
+def _format_bangla_summary(text: str) -> str:
+    """Place 'সতর্কতা:' cleanly on a new line for readability across web and Telegram."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"[ \t]*\n?[ \t]*(সতর্কতা\s*:)", r"\n\1", cleaned)
+    return cleaned.strip()
+
+
+def get_active_slm_label() -> str:
+    if _LAST_SLM_USED_LIVE:
+        return f"Gemma 3 1B-Q4_K_M Fine-Tuned Bangla SLM ({SLM_MODEL_NAME})"
+    return "Gemma 3 1B Bangla SLM (Grounded Fallback Mode)"
+
+
+def _call_local_slm_cached(
+    brand_name: str,
+    generic: str,
+    dosage_form: str,
+    manufacturer: str,
+    drug_class: str,
+    indication: str,
+    strength: str,
+    dosage_description: str,
+    side_effects_description: str,
+    interaction_description: str,
+    precautions_description: str,
+) -> Optional[str]:
+    """
+    Calls the local fine-tuned Gemma 3 1B GGUF server (llama-server or Ollama) via
+    OpenAI-compatible `/v1/chat/completions`.
+    Only caches successful Bangla responses (never caches failures/None) so if the AI server
+    is temporarily offline, callers immediately fall back to the deterministic summary method
+    and automatically recover once the AI server is back online.
+    """
+    if not SLM_API_URL:
+        return None
+
+    cache_key = (
+        brand_name,
+        generic,
+        dosage_form,
+        manufacturer,
+        drug_class,
+        indication,
+        strength,
+        dosage_description,
+        side_effects_description,
+        interaction_description,
+        precautions_description,
+    )
+    with _SLM_CACHE_LOCK:
+        cached = _SLM_CACHE.get(cache_key)
+        if cached is not None:
+            _SLM_CACHE.move_to_end(cache_key)
+            return cached
+
+    fields = [
+        ("ওষুধের নাম", brand_name, 120),
+        ("মাত্রা বা প্যাক", strength, 120),
+        ("ধরন", dosage_form, 80),
+        ("জেনেরিক উপাদান", generic, 240),
+        ("প্রস্তুতকারক", manufacturer, 120),
+        ("ওষুধের শ্রেণি", drug_class, 180),
+        ("ব্যবহারের নির্দেশনা", indication, 400),
+        ("সেবনবিধি", dosage_description, 600),
+        ("পার্শ্বপ্রতিক্রিয়া", side_effects_description, 400),
+        ("অন্য ওষুধের সাথে বিক্রিয়া", interaction_description, 400),
+        ("সতর্কতা ও নিষেধাজ্ঞা", precautions_description, 400),
+    ]
+    lines = ["[ডাটাবেস তথ্য]"]
+    for label, val, limit in fields:
+        clean = textwrap.shorten(str(val or "").strip(), width=limit, placeholder="...")
+        if clean:
+            lines.append(f"{label}: {clean}")
+    lines.append("\nরোগীর প্রশ্ন: এই ওষুধটি কী কাজ করে, কখন খাবো এবং কী সতর্কতা মানতে হবে?")
+    user_prompt = "\n".join(lines)
+
+    payload = {
+        "model": SLM_MODEL_NAME,
+        "messages": [
+            {"role": "user", "content": f"{TRAINED_SYSTEM_PROMPT}\n\n{user_prompt}"},
+        ],
+        "temperature": 0.15,
+        "top_p": 0.9,
+        "repeat_penalty": 1.05,
+        "max_tokens": SLM_MAX_TOKENS,
+        "stream": False,
+    }
+
+    req = urllib.request.Request(
+        SLM_API_URL,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=SLM_TIMEOUT_SEC) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        content = (
+            data.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+            .strip()
+        )
+        # Validate that the response actually contains Bangla text before accepting & caching it
+        if content and re.search(r"[\u0980-\u09FF]{10,}", content):
+            formatted = _format_bangla_summary(content)
+            with _SLM_CACHE_LOCK:
+                _SLM_CACHE[cache_key] = formatted
+                _SLM_CACHE.move_to_end(cache_key)
+                while len(_SLM_CACHE) > _SLM_CACHE_MAX:
+                    _SLM_CACHE.popitem(last=False)
+            return formatted
+        return None
+    except Exception as exc:
+        logger.warning("[DEV-SLM] Local SLM server unavailable (%s); falling back to grounded summary.", exc)
+        return None
 
 BRAND_MODIFIERS = {"extra", "extend", "plus", "rapid", "one", "max", "pro", "forte", "ds", "sr", "xr", "cr"}
 
@@ -60,11 +219,38 @@ def generate_bangla_beginner_summary(
     drug_class: Optional[str] = None,
     indication: Optional[str] = None,
     strength: Optional[str] = None,
+    dosage_description: Optional[str] = None,
+    side_effects_description: Optional[str] = None,
+    interaction_description: Optional[str] = None,
+    precautions_description: Optional[str] = None,
+    use_llm: bool = True,
 ) -> str:
     """
-    Generates a clear, patient-friendly Bangla summary (`সহজ বাংলা সারসংক্ষেপ`) grounded in
-    the medicine's generic compound, therapeutic class, and indication from `medicines.db`.
+    Generates a clear, patient-friendly Bangla summary (`সহজ বাংলা সারসংক্ষেপ`) using the
+    fine-tuned Gemma 3 1B GGUF model via local `llama-server` / Ollama (`SLM_API_URL`),
+    with an automatic grounded fallback if the local SLM server is offline.
     """
+    global _LAST_SLM_USED_LIVE
+
+    if use_llm and SLM_API_URL:
+        llm_out = _call_local_slm_cached(
+            brand_name=(brand_name or "").strip(),
+            generic=(generic or "").strip(),
+            dosage_form=(dosage_form or "Tablet").strip(),
+            manufacturer=(manufacturer or "").strip(),
+            drug_class=(drug_class or "").strip(),
+            indication=(indication or "").strip(),
+            strength=(strength or "").strip(),
+            dosage_description=(dosage_description or "").strip(),
+            side_effects_description=(side_effects_description or "").strip(),
+            interaction_description=(interaction_description or "").strip(),
+            precautions_description=(precautions_description or "").strip(),
+        )
+        if llm_out:
+            _LAST_SLM_USED_LIVE = True
+            return llm_out
+        _LAST_SLM_USED_LIVE = False
+
     form_raw = (dosage_form or "Tablet").strip()
     form_bn = _DOSAGE_FORM_BN.get(form_raw.lower(), f"{form_raw}")
     mfg_str = f" ({manufacturer})" if manufacturer else ""
@@ -133,9 +319,9 @@ def generate_bangla_beginner_summary(
         rule_bn = "প্রতিদিন চিকিৎসকের নির্ধারিত মাত্রায় খাবারের পরে পানি দিয়ে সেবন করুন।"
         warn_bn = "সতর্কতা: গর্ভাবস্থায়, স্তন্যদানকালে বা অন্য কোনো দীর্ঘমেয়াদী ওষুধের সাথে খাওয়ার আগে চিকিৎসকের পরামর্শ নিন।"
 
-    return (
+    return _format_bangla_summary(
         f"{brand_name}{str_part} হলো একটি {form_bn}{mfg_str}, যার মূল সক্রিয় উপাদান {generic}। "
-        f"{use_bn} {rule_bn} {warn_bn}"
+        f"{use_bn} {rule_bn}\n{warn_bn}"
     )
 
 
@@ -312,6 +498,11 @@ class SafetySLMEngine:
             drug_class=med.drug_class,
             indication=med.indication,
             strength=strength_str,
+            dosage_description=med.dosage_description,
+            side_effects_description=med.side_effects_description,
+            interaction_description=med.interaction_description,
+            precautions_description=med.precautions_description or med.contraindications_description,
+            use_llm=True,
         )
 
         if is_duplicate:

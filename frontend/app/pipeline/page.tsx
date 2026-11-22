@@ -60,9 +60,9 @@ const PIPELINE_STAGE_STEPS = [
   },
   {
     step: 5,
-    title: "Quantized Safety SLM (Qwen2.5-1.5B-INT4)",
-    titleBn: "ধাপ ৫/৬: Safety SLM বাংলা সারসংক্ষেপ ও ডুপ্লিকেট যাচাই",
-    desc: "Suppressing torn-foil substring ghosts, checking pairwise drug conflicts & generating Bangla summary",
+    title: "Fine-Tuned Gemma 3 1B Bangla SLM (Q4_K_M)",
+    titleBn: "ধাপ ৫/৬: Gemma 3 1B বাংলা সারসংক্ষেপ ও ডুপ্লিকেট যাচাই",
+    desc: "Generating grounded Bangla summaries via local llama.cpp Gemma 3 1B & checking pairwise drug conflicts",
   },
   {
     step: 6,
@@ -774,7 +774,7 @@ export default function PipelineInspectorPage() {
                     <p className="text-xs font-bold text-[#0d9488]">
                       {strip.genericName}
                     </p>
-                    <p className="text-[11px] text-[#09353c] bg-[#f2f9f8] p-2.5 rounded-xl border border-teal-50 leading-relaxed line-clamp-3">
+                    <p className="text-[11px] text-[#09353c] bg-[#f2f9f8] p-2.5 rounded-xl border border-teal-50 leading-relaxed whitespace-pre-line">
                       {strip.databaseRecord?.beginner_summary ||
                         strip.dosageBangla}
                     </p>
@@ -875,10 +875,10 @@ export default function PipelineInspectorPage() {
                     সহজ বাংলা সারসংক্ষেপ (Bangla Summary)
                   </p>
                   <span className="rounded-full bg-white px-2.5 py-0.5 text-[10px] font-bold text-[#0b5563] border border-teal-100">
-                    Safety SLM
+                    Gemma 3 1B SLM
                   </span>
                 </div>
-                <p className="text-xs sm:text-sm font-medium text-[#09353c] leading-relaxed">
+                <p className="text-xs sm:text-sm font-medium text-[#09353c] leading-relaxed whitespace-pre-line">
                   {activeMedicine.beginner_summary}
                 </p>
               </div>

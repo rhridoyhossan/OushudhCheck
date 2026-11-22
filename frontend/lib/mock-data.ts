@@ -8,8 +8,8 @@ export const PRESET_SCENARIOS: PresetScenario[] = [
     description:
       "Napa 500mg + Ace 500mg (Paracetamol Duplication) + Rolac 10mg (Ketorolac NSAID) + Seclo 20mg",
     result: {
-      scanId: "SCN-2026-COU-8841",
-      timestamp: "Just now • YOLO26s + Qwen2.5-1.5B-BD",
+      scanId: "SCN-2026-OC-8841",
+      timestamp: "Just now • YOLO26s + Gemma 3 1B-BD",
       inferenceTimeMs: 42,
       pipelineMetrics: {
         yoloDetectionMs: 18,
@@ -135,7 +135,7 @@ export const PRESET_SCENARIOS: PresetScenario[] = [
     description:
       "Ecosprin 75mg (Aspirin) + Naproxen 500mg + Monas 10mg (Bleeding Risk Interaction)",
     result: {
-      scanId: "SCN-2026-COU-9104",
+      scanId: "SCN-2026-OC-9104",
       timestamp: "Preset • DrugBank DDI Graph Verification",
       inferenceTimeMs: 39,
       pipelineMetrics: {
@@ -230,7 +230,7 @@ export const PRESET_SCENARIOS: PresetScenario[] = [
     description:
       "Sergel 20mg + Napa Extend 665mg + Histacin 4mg (No Duplications or Adverse Conflicts)",
     result: {
-      scanId: "SCN-2026-COU-9320",
+      scanId: "SCN-2026-OC-9320",
       timestamp: "Preset • Verified Safe Combination",
       inferenceTimeMs: 36,
       pipelineMetrics: {

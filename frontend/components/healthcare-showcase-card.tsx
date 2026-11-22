@@ -167,7 +167,7 @@ export function HealthcareShowcaseCard() {
                   বাংলা ভয়েস সতর্কতা (Bangla AI)
                 </p>
                 <span className="text-[10px] font-mono text-[#0ea86b] font-bold">
-                  Qwen2.5-1.5B
+                  Gemma 3 1B
                 </span>
               </div>
               <p className="text-[11px] text-[#46737a] mt-1.5 line-clamp-2 leading-relaxed">

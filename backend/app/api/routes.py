@@ -28,7 +28,7 @@ try:
         TextExtractRequest,
     )
     from backend.app.services.ocr import MedicineStripScanner, evaluate_multi_strip_safety
-    from backend.app.services.slm import generate_bangla_beginner_summary
+    from backend.app.services.slm import generate_bangla_beginner_summary, get_active_slm_label
     from backend.app.services.voice import synthesize_bangla_speech
 except ImportError:
     from app.core.config import PROJECT_ROOT, get_readonly_db_connection  # type: ignore
@@ -41,7 +41,7 @@ except ImportError:
         TextExtractRequest,
     )
     from app.services.ocr import MedicineStripScanner, evaluate_multi_strip_safety  # type: ignore
-    from app.services.slm import generate_bangla_beginner_summary  # type: ignore
+    from app.services.slm import generate_bangla_beginner_summary, get_active_slm_label  # type: ignore
     from app.services.voice import synthesize_bangla_speech  # type: ignore
 
 logger = logging.getLogger("oushudhcheck.api")
@@ -303,6 +303,7 @@ def list_medicines(
                 drug_class=d.get("drug_class"),
                 indication=d.get("indication"),
                 strength=d.get("package_container"),
+                use_llm=False,
             )
             items.append(d)
 
@@ -569,6 +570,7 @@ async def _assemble_scan_response(
                 },
                 "cropThumbnail": thumbs["cropThumbnail"],
                 "preprocessedThumbnail": thumbs["preprocessedThumbnail"],
+                "banglaSummary": bangla_summary,
             }
         )
 
@@ -611,7 +613,7 @@ async def _assemble_scan_response(
         "wallClockMs": wall_ms,
         "activeDetector": "YOLO26n ONNX (CPUExecutionProvider)",
         "activeOcrEngine": "PaddleOCR PP-OCRv6 (RapidOCR ONNX)",
-        "activeReasoningMode": "Qwen2.5-1.5B-INT4 Grounded Bangla SLM",
+        "activeReasoningMode": get_active_slm_label(),
         "stages": [
             {
                 "id": "object_detection",
@@ -644,7 +646,7 @@ async def _assemble_scan_response(
             {
                 "id": "reasoning",
                 "label": "Reasoning",
-                "engine": "Quantized Safety SLM + Pairwise Conflict Graph",
+                "engine": "Gemma 3 1B-Q4_K_M Bangla SLM + Pairwise Conflict Graph",
                 "durationMs": slm_ms,
                 "color": "#7c3aed",
             },
@@ -662,7 +664,7 @@ async def _assemble_scan_response(
 
     return {
         "scanId": f"SCN-LIVE-{int(time.time())}-{uuid.uuid4().hex[:6]}",
-        "timestamp": f"YOLO26 ONNX + PP-OCRv6 + RapidFuzz + Safety SLM • {total_ms}ms",
+        "timestamp": f"YOLO26 ONNX + PP-OCRv6 + RapidFuzz + Gemma 3 1B SLM • {total_ms}ms",
         "inferenceTimeMs": total_ms,
         "pipelineMetrics": {
             "yoloDetectionMs": yolo_ms,

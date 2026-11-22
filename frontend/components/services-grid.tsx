@@ -409,7 +409,7 @@ export function ServicesGrid() {
                       <Zap className="size-3" />
                     </div>
                     <p className="text-xs font-extrabold text-[#09353c]">
-                      Qwen2.5
+                      Gemma 3 1B
                     </p>
                     <p className="text-[9px] text-[#46737a]">SLM Engine</p>
                   </div>
@@ -469,7 +469,7 @@ export function ServicesGrid() {
 
               <div className="mt-5 pt-1">
                 <span className="inline-block rounded-full bg-emerald-50 text-[#0ea86b] border border-emerald-200/70 px-2.5 py-0.5 text-[10px] font-extrabold uppercase tracking-wider">
-                  6. Powered by Qwen2.5 SLM &amp; Bangla TTS
+                  6. Powered by Gemma 3 1B SLM &amp; Bangla TTS
                 </span>
                 <h3 className="text-lg font-extrabold text-[#09353c] group-hover:text-[#0ea86b] transition mt-1.5">
                   Bangla AI Voice Assistant

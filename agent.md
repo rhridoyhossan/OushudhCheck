@@ -1,7 +1,7 @@
 # OushudhCheck — Agent & Developer Guide (`agent.md`)
 
 > **Multi-Strip Medicine Safety Scanner & Bangla Voice Assistant**
-> Built for **CoU AI Hackathon 2026** (Healthcare & Accessibility).
+> Healthcare & Accessibility AI Platform.
 
 This document is the authoritative orientation and operational guide for AI agents and developers working in this repository. Every path, symbol, command, and invariant below reflects the actual codebase.
 

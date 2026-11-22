@@ -5,7 +5,7 @@
 
 OushudhCheck is an AI-powered medicine safety platform designed to help people identify medicines, detect duplicate active ingredients, and screen potential drug interactions by scanning multiple medicine strips in a single image.
 
-Built for **CoU AI Hackathon 2026**, the project combines computer vision, OCR, pharmaceutical data matching, drug-interaction screening, and Bangla AI voice assistance to make medicine information more accessible to everyone.
+The platform combines computer vision, OCR, pharmaceutical data matching, drug-interaction screening, and Bangla AI voice assistance to make medicine information more accessible to everyone.
 
 ---
 
@@ -77,7 +77,7 @@ flowchart TD
     E --> G["Drug Interaction Screening"]
     F --> H["Safety Analysis"]
     G --> H
-    H --> I["Qwen2.5 Bangla Explanation"]
+    H --> I["Gemma 3 1B Bangla Explanation"]
     I --> J["Web Dashboard & Bangla Voice"]
     I --> K["Telegram Assistant"]
 ```
@@ -93,7 +93,7 @@ flowchart TD
 | Brand Matching | RapidFuzz, Phonetic Indexing |
 | Medicine Database | Curated Bangladesh Medicine Dataset |
 | Interaction Screening | DrugBank DDI Dataset / Knowledge Graph |
-| Language Model | Qwen2.5-1.5B |
+| Language Model | Gemma 3 1B (Fine-Tuned Q4_K_M GGUF via llama.cpp) |
 | Voice Input | Whisper |
 | Voice Output | Bangla Text-to-Speech |
 | Deployment Format | ONNX, GGUF (planned pipeline) |
@@ -140,17 +140,6 @@ Building the YOLO26 blister detector, FastAPI inference engine, 21K+ BD drug res
 
 ---
 
-## Hackathon
-
-**CoU AI Hackathon 2026**
-
-- Track: Healthcare
-- Secondary Focus: Accessibility
-- Project: OushudhCheck
-- Team: OushudhCheck
-
----
-
 ## Important Medical Disclaimer
 
 OushudhCheck is an AI-assisted medicine information and safety-screening tool. Its results may contain errors and should not be treated as a medical diagnosis, prescription, or replacement for professional medical advice.
@@ -169,6 +158,4 @@ We believe understanding medicine should not require advanced medical knowledge 
 
 <p align="center">
   <strong>OushudhCheck — Know Your Medicines. Protect Your Health.</strong>
-  <br/>
-  Built with purpose for CoU AI Hackathon 2026.
 </p>

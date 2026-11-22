@@ -7,6 +7,13 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
 PROJECT_ROOT = BACKEND_DIR.parent
 ROOT_DIR = PROJECT_ROOT
 
+try:
+    from dotenv import load_dotenv  # type: ignore
+
+    load_dotenv(PROJECT_ROOT / ".env")
+except ImportError:
+    pass
+
 DB_PATH = Path(os.getenv("MEDICINES_DB_PATH", PROJECT_ROOT / "data" / "processed" / "medicines.db"))
 YOLO_MODEL_PATH = Path(os.getenv("YOLO_MODEL_PATH", PROJECT_ROOT / "data" / "processed" / "yolo_strips.onnx"))
 

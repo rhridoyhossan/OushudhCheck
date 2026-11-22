@@ -44,8 +44,7 @@ def _evict_tts_cache_if_needed() -> None:
 
 def _get_faster_whisper_model():
     """
-    Lazy-loads `faster-whisper` (`tiny` / `base` INT8 on CPU) for Bangla & English voice queries
-    (per OushudhCheck Hackathon Proposal Section 3.4: `faster-whisper + edge-tts + aiogram v3`).
+    Lazy-loads `faster-whisper` (`tiny` / `base` INT8 on CPU) for Bangla & English voice queries.
     """
     global _WHISPER_MODEL
     if _WHISPER_MODEL is not None:
