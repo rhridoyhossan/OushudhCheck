@@ -49,7 +49,7 @@ export async function GET(request: NextRequest) {
   // 1. Primary Path: Try FastAPI Backend at http://127.0.0.1:8000/api/v1/medicines
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 1500);
+    const timeout = setTimeout(() => controller.abort(), 5000);
     const fastApiRes = await fetch(
       `${FASTAPI_URL}/medicines?${searchParams.toString()}`,
       {
@@ -61,7 +61,9 @@ export async function GET(request: NextRequest) {
 
     if (fastApiRes.ok) {
       const data = await fastApiRes.json();
-      return NextResponse.json(data);
+      return NextResponse.json(data, {
+        headers: { "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300" },
+      });
     }
   } catch {
     // FastAPI server not started separately; fall back to direct Python read-only sqlite3 query
@@ -93,10 +95,11 @@ where_clauses = []
 params = []
 
 if q_clean:
+    esc_q = q_clean.replace("\\\\", "\\\\\\\\").replace("%", "\\\\%").replace("_", "\\\\_")
     where_clauses.append(
-        "(b.brand_lower LIKE ? OR b.generic_lower LIKE ? OR LOWER(COALESCE(b.manufacturer, '')) LIKE ? OR LOWER(COALESCE(g.drug_class, '')) LIKE ? OR LOWER(COALESCE(g.indication, '')) LIKE ?)"
+        "(b.brand_lower LIKE ? ESCAPE '\\\\' OR b.generic_lower LIKE ? ESCAPE '\\\\' OR LOWER(COALESCE(b.manufacturer, '')) LIKE ? ESCAPE '\\\\' OR LOWER(COALESCE(g.drug_class, '')) LIKE ? ESCAPE '\\\\' OR LOWER(COALESCE(g.indication, '')) LIKE ? ESCAPE '\\\\')"
     )
-    pat = f"%{q_clean}%"
+    pat = f"%{esc_q}%"
     params.extend([pat, pat, pat, pat, pat])
 
 if form_clean and form_clean != "All":

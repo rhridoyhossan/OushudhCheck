@@ -26,7 +26,7 @@ flowchart LR
 ### Key Architectural Facts
 - **No external database server**: All pharmaceutical data lives in `data/processed/medicines.db` (SQLite, ~20 MB).
 - **Telegram bot does not call FastAPI over HTTP**: `bot/telegram_bot.py` uses raw `aiohttp` long-polling (`getUpdates`) and imports `backend.app.services.{ocr,slm,voice}` directly in-process.
-- **Deterministic Grounded Bangla NLG**: `backend/app/services/slm.py` (`SafetySLMEngine` + `generate_bangla_beginner_summary`) runs fast deterministic clinical templates grounded strictly in `medicines.db` rather than loading multi-GB LLM weights at runtime.
+- **Live Gemma 3 1B Bangla SLM + Grounded Fallback**: `backend/app/services/slm.py` (`SafetySLMEngine` + `generate_bangla_beginner_summary`) calls the local fine-tuned `oushudhcheck-gemma3-1b-bn.Q4_K_M.gguf` via `llama-server` (`SLM_API_URL`, port `8081`, `-c 8192 -np 2`, `SLM_MAX_TOKENS=768`) with a 30s circuit breaker and automatic fallback to deterministic clinical Bangla templates grounded strictly in `medicines.db`.
 - **Zero-crash ONNX bootstrap**: `StripDetector` (`backend/app/services/detector.py`) loads `data/processed/yolo_strips.onnx` via `onnxruntime` (`CPUExecutionProvider`) and falls back to OpenCV contour proposals if using the minimal identity graph; if the volume is read-only (`:ro`), it falls back to `<tempdir>/yolo_strips.onnx`.
 
 ---
@@ -37,7 +37,7 @@ flowchart LR
 |---|---|
 | `backend/app/main.py` | FastAPI app factory, CORS middleware (`ALLOWED_ORIGINS`), mounts router at `/api/v1` and `/api`, `GET /health`. |
 | `backend/app/core/config.py` | Path resolution (`DB_PATH`, `YOLO_MODEL_PATH`), thresholds (`MIN_FUZZY_SCORE`, `MAX_STRIPS_PER_IMAGE`, `OCR_LANG`), `get_readonly_db_connection()`. |
-| `backend/app/api/routes.py` | All REST endpoints (`/medicines`, `/medicines/search`, `/scan`, `/scan-benchmark`, `/extract-text`, `/extract-multi-text`, `/tts`, `/benchmark-samples`, `/demo-image/{sample_id}`). |
+| `backend/app/api/routes.py` | All REST endpoints (`/medicines`, `/medicines/search`, `/scan`, `/scan-stream`, `/scan-benchmark`, `/extract-text`, `/extract-multi-text`, `/tts`, `/benchmark-samples`, `/demo-image/{sample_id}`). |
 | `backend/app/models/schemas.py` | Pydantic v2 schemas (`MedicineItem`, `PaginatedMedicinesResponse`, `MedicineInfo`, `StripScanResult`, `SafetyAlert`, `MultiStripScanResponse`). |
 | `backend/app/services/detector.py` | `StripDetector`: YOLO ONNX / Ultralytics / OpenCV contour detection + LAB-CLAHE foil glare removal (`preprocess_for_ocr`). |
 | `backend/app/services/ocr.py` | `OCREngine` (RapidOCR ONNX primary, 0° + 90° CCW), `MedicineMatcher` (RapidFuzz + SQLite + EDCL virtual records), `evaluate_multi_strip_safety()`, `MedicineStripScanner`. |
@@ -51,8 +51,8 @@ flowchart LR
 | `frontend/app/pipeline/page.tsx` | Live 6-stage AI Pipeline & Transparency Inspector (`components/ai-transparency-inspector.tsx`). |
 | `frontend/app/api/medicines/route.ts` | Next.js Route Handler proxying `/api/medicines` to FastAPI (`INTERNAL_API_URL` -> `NEXT_PUBLIC_API_URL`) with a local Python `sqlite3` read-only fallback. |
 | `frontend/lib/` | `api.ts` (FastAPI client), `types.ts` (shared TS interfaces), `mock-data.ts` (preset demo data), `utils.ts`. |
-| `data/processed/` | `medicines.db` (read-only SQLite), `yolo_strips.onnx`, `beginner_summary_report.md`. |
-| `scripts/` | `ingest_drugs.py` (CSV -> SQLite), `generate_beginner_summaries.py`, `benchmark.py` (evaluates `test/` images). |
+| `data/processed/` | `medicines.db` (read-only SQLite), `yolo_strips.onnx`. |
+| `scripts/` | `ingest_drugs.py` (CSV -> deduplicated SQLite with `beginner_summary`), `benchmark.py` (evaluates `test/` images). |
 | `ml_training/` | Colab/Kaggle training notebooks for YOLO and SLM experiments. |
 | `test/` | Local gitignored folder of real medicine strip photos used by `scripts/benchmark.py` and `/scan-benchmark`. |
 

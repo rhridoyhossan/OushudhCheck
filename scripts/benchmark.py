@@ -19,6 +19,9 @@ from backend.app.services.ocr import MedicineStripScanner
 def run_benchmark() -> None:
     scanner = MedicineStripScanner()
     test_dir = ROOT_DIR / "test"
+    if not test_dir.exists():
+        print(f"Test directory not found at {test_dir}; add strip photos there to run benchmark.")
+        return
 
     print("=" * 95)
     print("OushudhCheck Real Test-Folder Image Benchmark (RapidOCR PP-OCRv6 + RapidFuzz + medicines.db)")

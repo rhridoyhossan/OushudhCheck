@@ -97,7 +97,12 @@ class OushudhCheckTelegramBot:
     async def api_call(self, session: aiohttp.ClientSession, method: str, **kwargs: Any) -> Dict[str, Any]:
         url = f"{API_BASE}/{method}"
         async with session.post(url, **kwargs) as resp:
-            data = await resp.json()
+            try:
+                data = await resp.json(content_type=None)
+            except Exception as exc:
+                text = await resp.text()
+                logger.error("[DEV-BOT] Non-JSON Telegram API response on %s (HTTP %d): %s", method, resp.status, text[:200])
+                return {"ok": False, "error_code": resp.status, "description": str(exc)}
             if not data.get("ok"):
                 logger.error("[DEV-BOT] Telegram API error on %s: %s", method, data)
             return data
@@ -164,9 +169,10 @@ class OushudhCheckTelegramBot:
         form.add_field("caption", caption[:1000])
         form.add_field("title", "OushudhCheck Bangla Voice Guide")
         form.add_field("performer", "OushudhCheck AI")
+        audio_bytes = await asyncio.to_thread(audio_path.read_bytes)
         form.add_field(
             "audio",
-            audio_path.read_bytes(),
+            audio_bytes,
             filename=audio_path.name,
             content_type="audio/mpeg",
         )
@@ -316,7 +322,6 @@ class OushudhCheckTelegramBot:
             return
 
         h, w = image.shape[:2]
-        await asyncio.to_thread(self.scanner.detector.detect_strips, image)
 
         # Stage 2/5 Progress
         await self.edit_text(
@@ -484,7 +489,7 @@ class OushudhCheckTelegramBot:
             return
 
         tmp_ogg = Path(tempfile.gettempdir()) / f"tg_voice_{chat_id}_{uuid.uuid4().hex}.ogg"
-        tmp_ogg.write_bytes(voice_bytes)
+        await asyncio.to_thread(tmp_ogg.write_bytes, voice_bytes)
 
         try:
             transcribed = await asyncio.to_thread(transcribe_bangla_audio, tmp_ogg)
@@ -562,7 +567,8 @@ class OushudhCheckTelegramBot:
             f"📖 <b>সহজ বাংলা সারসংক্ষেপ:</b>\n{_format_tg_summary(bangla_summary)}"
         )
         await self.delete_message(session, chat_id, existing_msg_id)
-        await self.send_text(session, chat_id, reply)
+        for chunk in _chunk_html_blocks(reply.split("\n\n")):
+            await self.send_text(session, chat_id, chunk)
 
         voice_status_id = await self.send_text(
             session,
@@ -594,24 +600,12 @@ class OushudhCheckTelegramBot:
                 logger.error("[DEV-BOT] Failed to authenticate Telegram bot token!")
                 return
 
-            while True:
-                try:
-                    data = await self.api_call(
-                        session,
-                        "getUpdates",
-                        json={"offset": self.offset, "timeout": 25},
-                    )
-                    if not data.get("ok") and data.get("error_code") == 409:
-                        logger.warning(
-                            "[DEV-BOT] Another Telegram bot instance is already polling this token (409 Conflict). Backing off for 15s..."
-                        )
-                        await asyncio.sleep(15)
-                        continue
-                    for upd in data.get("result", []):
-                        self.offset = int(upd["update_id"]) + 1
-                        msg: Optional[Dict[str, Any]] = upd.get("message")
-                        if not msg:
-                            continue
+            sem = asyncio.Semaphore(4)
+            active_tasks: set = set()
+
+            async def _dispatch_update(msg: Dict[str, Any]) -> None:
+                async with sem:
+                    try:
                         chat_id = int(msg["chat"]["id"])
                         user_name = msg.get("from", {}).get("first_name", "User")
 
@@ -643,6 +637,30 @@ class OushudhCheckTelegramBot:
                                 )
                             else:
                                 await self.handle_text_query(session, chat_id, txt, user_name)
+                    except Exception as exc:
+                        logger.exception("[DEV-BOT] Update handler failed: %s", exc)
+
+            while True:
+                try:
+                    data = await self.api_call(
+                        session,
+                        "getUpdates",
+                        json={"offset": self.offset, "timeout": 25},
+                    )
+                    if not data.get("ok") and data.get("error_code") == 409:
+                        logger.warning(
+                            "[DEV-BOT] Another Telegram bot instance is already polling this token (409 Conflict). Backing off for 15s..."
+                        )
+                        await asyncio.sleep(15)
+                        continue
+                    for upd in data.get("result", []):
+                        self.offset = int(upd["update_id"]) + 1
+                        msg: Optional[Dict[str, Any]] = upd.get("message")
+                        if not msg:
+                            continue
+                        task = asyncio.create_task(_dispatch_update(msg))
+                        active_tasks.add(task)
+                        task.add_done_callback(active_tasks.discard)
                 except asyncio.CancelledError:
                     break
                 except Exception as exc:

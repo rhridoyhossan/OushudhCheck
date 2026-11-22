@@ -39,7 +39,46 @@ import {
   analyzeMedicineImageStream,
   BACKEND_ORIGIN,
 } from "@/lib/api";
+import { BanglaVoiceWaveform } from "@/components/bangla-voice-waveform";
 import { toast } from "sonner";
+
+const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
+
+async function resizeImageForUpload(
+  input: File | Blob,
+  maxDim = 1920
+): Promise<File | Blob> {
+  if (typeof window === "undefined" || input.size < 400_000) return input;
+  try {
+    const bitmap = await createImageBitmap(input);
+    const { width, height } = bitmap;
+    if (Math.max(width, height) <= maxDim) {
+      bitmap.close();
+      return input;
+    }
+    const scale = maxDim / Math.max(width, height);
+    const targetW = Math.max(1, Math.round(width * scale));
+    const targetH = Math.max(1, Math.round(height * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = targetW;
+    canvas.height = targetH;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      bitmap.close();
+      return input;
+    }
+    ctx.drawImage(bitmap, 0, 0, targetW, targetH);
+    bitmap.close();
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, "image/jpeg", 0.88)
+    );
+    if (!blob) return input;
+    const name = input instanceof File ? input.name.replace(/\.[^.]+$/, ".jpg") : "upload.jpg";
+    return new File([blob], name, { type: "image/jpeg" });
+  } catch {
+    return input;
+  }
+}
 
 const LIVE_SCAN_STAGES = [
   {
@@ -144,6 +183,9 @@ export function MedicineScannerWorkspace() {
   const [readyAudioBlobUrl, setReadyAudioBlobUrl] = useState<string | null>(
     null
   );
+  const [readyAudioEl, setReadyAudioEl] = useState<HTMLAudioElement | null>(
+    null
+  );
   const [isPlayingVoice, setIsPlayingVoice] = useState(false);
   const [audioDuration, setAudioDuration] = useState<number>(0);
   const [audioCurrentTime, setAudioCurrentTime] = useState<number>(0);
@@ -240,6 +282,7 @@ export function MedicineScannerWorkspace() {
 
         const audio = new Audio(objUrl);
         audioRef.current = audio;
+        setReadyAudioEl(audio);
         audio.onloadedmetadata = () => {
           if (!cancelled) {
             setAudioDuration(audio.duration || 0);
@@ -274,6 +317,7 @@ export function MedicineScannerWorkspace() {
         audioRef.current.pause();
         audioRef.current = null;
       }
+      setReadyAudioEl(null);
       if (createdObjUrl) {
         URL.revokeObjectURL(createdObjUrl);
       }
@@ -293,10 +337,14 @@ export function MedicineScannerWorkspace() {
 
   const { getRootProps, getInputProps, isDragActive, open } = useDropzone({
     onDrop,
+    onDropRejected: () => {
+      toast.error("File must be a JPEG, PNG, or WebP image under 15 MB.");
+    },
     accept: {
       "image/*": [".jpeg", ".jpg", ".png", ".webp"],
     },
     maxFiles: 1,
+    maxSize: MAX_UPLOAD_BYTES,
     noClick: true,
   });
 
@@ -344,8 +392,9 @@ export function MedicineScannerWorkspace() {
         return;
       }
 
+      const optimizedFile = await resizeImageForUpload(fileToAnalyze, 1920);
       const { data, isLiveBackend } = await analyzeMedicineImageStream(
-        fileToAnalyze,
+        optimizedFile,
         (ev) => {
           if (ev.stageIndex < 0 || ev.stageIndex >= LIVE_SCAN_STAGES.length) {
             return;
@@ -513,14 +562,6 @@ export function MedicineScannerWorkspace() {
     utterance.onend = () => setIsPlayingVoice(false);
     utterance.onerror = () => setIsPlayingVoice(false);
     window.speechSynthesis.speak(utterance);
-  };
-
-  const handleSeekAudio = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const targetSec = Number(e.target.value);
-    if (audioRef.current && Number.isFinite(targetSec)) {
-      audioRef.current.currentTime = targetSec;
-      setAudioCurrentTime(targetSec);
-    }
   };
 
   const audioProgressPct =
@@ -746,7 +787,7 @@ export function MedicineScannerWorkspace() {
                         Choose a file or drag &amp; drop it here.
                       </p>
                       <p className="text-xs sm:text-sm text-[#46737a]">
-                        JPEG, PNG, and WebP formats, up to 50 MB.
+                        JPEG, PNG, and WebP formats, up to 15 MB.
                       </p>
                     </div>
 
@@ -940,17 +981,13 @@ export function MedicineScannerWorkspace() {
                 </div>
               </div>
 
-              {/* Audio Length & Interactive Progress Bar */}
+              {/* WaveSurfer.js Interactive Bangla Voice Waveform & Progress */}
               <div className="space-y-1.5">
-                <input
-                  type="range"
-                  min={0}
-                  max={audioDuration || 100}
-                  step={0.1}
-                  value={audioCurrentTime}
-                  disabled={isVoiceLoading || audioDuration <= 0}
-                  onChange={handleSeekAudio}
-                  className="w-full h-2 rounded-full accent-[#0ea86b] bg-white/20 cursor-pointer disabled:opacity-40"
+                <BanglaVoiceWaveform
+                  audioUrl={readyAudioBlobUrl}
+                  audioElement={readyAudioEl}
+                  isLoading={isVoiceLoading}
+                  onSeek={(sec) => setAudioCurrentTime(sec)}
                 />
                 <div className="flex items-center justify-between text-[11px] font-mono text-teal-100/90">
                   <span>{formatAudioTime(audioCurrentTime)}</span>

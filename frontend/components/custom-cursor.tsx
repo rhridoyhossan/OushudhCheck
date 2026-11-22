@@ -49,12 +49,41 @@ export function CustomCursor() {
     const textInputSelector = "input, textarea, [contenteditable='true']";
     const headingSelector = "h1, h2, h3";
 
+    const animateRing = () => {
+      const dx = mouseX - ringX;
+      const dy = mouseY - ringY;
+      ringX += dx * 0.2;
+      ringY += dy * 0.2;
+
+      if (ringWrapRef.current) {
+        ringWrapRef.current.style.transform = `translate3d(${ringX}px, ${ringY}px, 0)`;
+      }
+
+      if (Math.abs(dx) > 0.2 || Math.abs(dy) > 0.2) {
+        rafId = window.requestAnimationFrame(animateRing);
+      } else {
+        ringX = mouseX;
+        ringY = mouseY;
+        if (ringWrapRef.current) {
+          ringWrapRef.current.style.transform = `translate3d(${ringX}px, ${ringY}px, 0)`;
+        }
+        rafId = 0;
+      }
+    };
+
+    const ensureRingAnimating = () => {
+      if (!rafId) {
+        rafId = window.requestAnimationFrame(animateRing);
+      }
+    };
+
     const syncDot = (x: number, y: number) => {
       mouseX = x;
       mouseY = y;
       if (dotWrapRef.current) {
         dotWrapRef.current.style.transform = `translate3d(${x}px, ${y}px, 0)`;
       }
+      ensureRingAnimating();
     };
 
     const onMouseMove = (e: MouseEvent) => {
@@ -98,23 +127,11 @@ export function CustomCursor() {
     const onMouseLeave = () => setVisible(false);
     const onMouseEnter = () => setVisible(true);
 
-    const animateRing = () => {
-      ringX += (mouseX - ringX) * 0.2;
-      ringY += (mouseY - ringY) * 0.2;
-
-      if (ringWrapRef.current) {
-        ringWrapRef.current.style.transform = `translate3d(${ringX}px, ${ringY}px, 0)`;
-      }
-
-      rafId = window.requestAnimationFrame(animateRing);
-    };
-
     window.addEventListener("mousemove", onMouseMove, { passive: true });
     window.addEventListener("mousedown", onMouseDown, { passive: true });
     window.addEventListener("mouseup", onMouseUp, { passive: true });
     document.addEventListener("mouseleave", onMouseLeave);
     document.addEventListener("mouseenter", onMouseEnter);
-    rafId = window.requestAnimationFrame(animateRing);
 
     return () => {
       document.documentElement.classList.remove("custom-cursor-active");
@@ -123,7 +140,7 @@ export function CustomCursor() {
       window.removeEventListener("mouseup", onMouseUp);
       document.removeEventListener("mouseleave", onMouseLeave);
       document.removeEventListener("mouseenter", onMouseEnter);
-      window.cancelAnimationFrame(rafId);
+      if (rafId) window.cancelAnimationFrame(rafId);
     };
   }, [enabled]);
 

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional
+import asyncio
 import hashlib
 import logging
 import os
 import tempfile
+import threading
 import uuid
 
 logger = logging.getLogger("oushudhcheck.voice")
@@ -15,6 +17,7 @@ AUDIO_CACHE_DIR = Path(tempfile.gettempdir()) / "oushudhcheck_tts"
 MAX_TTS_CACHE_FILES = 200
 MAX_TTS_CACHE_BYTES = 100 * 1024 * 1024  # 100 MB
 _WHISPER_MODEL = None
+_WHISPER_LOCK = threading.Lock()
 
 
 def _evict_tts_cache_if_needed() -> None:
@@ -50,16 +53,19 @@ def _get_faster_whisper_model():
     if _WHISPER_MODEL is not None:
         return _WHISPER_MODEL
 
-    try:
-        from faster_whisper import WhisperModel  # type: ignore
+    with _WHISPER_LOCK:
+        if _WHISPER_MODEL is not None:
+            return _WHISPER_MODEL
+        try:
+            from faster_whisper import WhisperModel  # type: ignore
 
-        logger.info("[DEV-VOICE] Loading faster-whisper ('base', compute_type='int8') speech recognition model...")
-        _WHISPER_MODEL = WhisperModel("base", device="cpu", compute_type="int8")
-        logger.info("[DEV-VOICE] Loaded faster-whisper ASR model successfully.")
-        return _WHISPER_MODEL
-    except Exception as exc:
-        logger.warning("[DEV-VOICE] faster-whisper unavailable: %s", exc)
-        return None
+            logger.info("[DEV-VOICE] Loading faster-whisper ('base', compute_type='int8') speech recognition model...")
+            _WHISPER_MODEL = WhisperModel("base", device="cpu", compute_type="int8")
+            logger.info("[DEV-VOICE] Loaded faster-whisper ASR model successfully.")
+            return _WHISPER_MODEL
+        except Exception as exc:
+            logger.warning("[DEV-VOICE] faster-whisper unavailable: %s", exc)
+            return None
 
 
 def transcribe_bangla_audio(audio_path: Path) -> Optional[str]:
@@ -117,7 +123,7 @@ async def synthesize_bangla_speech(
         communicate = edge_tts.Communicate(text=cleaned, voice=voice, rate=rate)
         await communicate.save(str(tmp_path))
         os.replace(tmp_path, out_path)
-        _evict_tts_cache_if_needed()
+        await asyncio.to_thread(_evict_tts_cache_if_needed)
         logger.info("[DEV-VOICE] Saved Bangla TTS audio -> %s (%d bytes)", out_path, out_path.stat().st_size)
         return out_path
     except Exception as exc:

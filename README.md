@@ -44,10 +44,10 @@ The platform is designed to:
 Uses YOLO26-based computer vision to detect and locate multiple medicine blister strips in a single image, including rotated and partially covered strips.
 
 ### 2. Intelligent Foil Text Recognition
-Uses PaddleOCR to extract medicine names and strength information from blister-pack images.
+Uses RapidOCR (PP-OCRv6 ONNX) to extract medicine names and strength information from blister-pack images.
 
 ### 3. Bangladesh Medicine Database
-Matches extracted brand names against a curated index containing **21,000+ Bangladeshi medicine brand records** and **1,700+ generic entries**.
+Matches extracted brand names against a curated index containing **17,191 Bangladeshi medicine brand records** and **1,661 generic entries**.
 
 ### 4. Duplicate Ingredient Detection
 Identifies medicines that contain the same active ingredient, even when they have different brand names.

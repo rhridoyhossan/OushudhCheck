@@ -14,7 +14,6 @@ Responsibilities:
 from __future__ import annotations
 
 from collections import Counter, OrderedDict
-from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 import json
 import logging
@@ -22,6 +21,7 @@ import os
 import re
 import textwrap
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -29,10 +29,10 @@ from rapidfuzz import fuzz
 
 try:
     from backend.app.core.config import PROJECT_ROOT
-    from backend.app.models.schemas import MedicineInfo, SafetyAlert, StripScanResult
+    from backend.app.models.schemas import MedicineInfo, StripScanResult
 except ImportError:
     from app.core.config import PROJECT_ROOT  # type: ignore
-    from app.models.schemas import MedicineInfo, SafetyAlert, StripScanResult  # type: ignore
+    from app.models.schemas import MedicineInfo, StripScanResult  # type: ignore
 
 logger = logging.getLogger("oushudhcheck.slm")
 
@@ -65,6 +65,8 @@ def _load_trained_system_prompt() -> str:
 
 TRAINED_SYSTEM_PROMPT = _load_trained_system_prompt()
 _LAST_SLM_USED_LIVE = False
+_SLM_CIRCUIT_OPEN_UNTIL = 0.0
+_SLM_CIRCUIT_COOLDOWN_SEC = 30.0
 _SLM_CACHE_MAX = 2048
 _SLM_CACHE: "OrderedDict[Tuple[str, ...], str]" = OrderedDict()
 _SLM_CACHE_LOCK = threading.Lock()
@@ -80,7 +82,9 @@ def _format_bangla_summary(text: str) -> str:
 
 
 def get_active_slm_label() -> str:
-    if _LAST_SLM_USED_LIVE:
+    with _SLM_CACHE_LOCK:
+        live = _LAST_SLM_USED_LIVE
+    if live:
         return f"Gemma 3 1B-Q4_K_M Fine-Tuned Bangla SLM ({SLM_MODEL_NAME})"
     return "Gemma 3 1B Bangla SLM (Grounded Fallback Mode)"
 
@@ -105,6 +109,7 @@ def _call_local_slm_cached(
     is temporarily offline, callers immediately fall back to the deterministic summary method
     and automatically recover once the AI server is back online.
     """
+    global _SLM_CIRCUIT_OPEN_UNTIL
     if not SLM_API_URL:
         return None
 
@@ -126,6 +131,8 @@ def _call_local_slm_cached(
         if cached is not None:
             _SLM_CACHE.move_to_end(cache_key)
             return cached
+        if time.monotonic() < _SLM_CIRCUIT_OPEN_UNTIL:
+            return None
 
     fields = [
         ("ওষুধের নাম", brand_name, 120),
@@ -187,7 +194,13 @@ def _call_local_slm_cached(
             return formatted
         return None
     except Exception as exc:
-        logger.warning("[DEV-SLM] Local SLM server unavailable (%s); falling back to grounded summary.", exc)
+        with _SLM_CACHE_LOCK:
+            _SLM_CIRCUIT_OPEN_UNTIL = time.monotonic() + _SLM_CIRCUIT_COOLDOWN_SEC
+        logger.warning(
+            "[DEV-SLM] Local SLM server unavailable (%s); falling back to grounded summary (cooldown %.0fs).",
+            exc,
+            _SLM_CIRCUIT_COOLDOWN_SEC,
+        )
         return None
 
 BRAND_MODIFIERS = {"extra", "extend", "plus", "rapid", "one", "max", "pro", "forte", "ds", "sr", "xr", "cr"}
@@ -247,9 +260,11 @@ def generate_bangla_beginner_summary(
             precautions_description=(precautions_description or "").strip(),
         )
         if llm_out:
-            _LAST_SLM_USED_LIVE = True
+            with _SLM_CACHE_LOCK:
+                _LAST_SLM_USED_LIVE = True
             return llm_out
-        _LAST_SLM_USED_LIVE = False
+        with _SLM_CACHE_LOCK:
+            _LAST_SLM_USED_LIVE = False
 
     form_raw = (dosage_form or "Tablet").strip()
     form_bn = _DOSAGE_FORM_BN.get(form_raw.lower(), f"{form_raw}")

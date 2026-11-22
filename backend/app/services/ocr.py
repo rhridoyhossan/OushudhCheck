@@ -455,8 +455,11 @@ class MedicineMatcher:
         self._brands_by_id: Dict[int, _BrandIndexEntry] = {}
         self._unique_brand_lowers: List[str] = []
         self._unique_generic_lowers: List[str] = []
+        self._unique_generic_lowers_set: Set[str] = set()
         self._generic_first_words: Set[str] = set()
+        self._known_db_words: Set[str] = set()
         self._edcl_virtual_records: Dict[int, MedicineInfo] = {}
+        self._medicine_info_cache: Dict[int, Optional[MedicineInfo]] = {}
         self._load_index()
 
     def _load_index(self) -> None:
@@ -548,6 +551,12 @@ class MedicineMatcher:
 
         self._unique_brand_lowers = list(self._brands_by_lower.keys())
         self._unique_generic_lowers = list(generics_set)
+        self._unique_generic_lowers_set = generics_set
+        self._known_db_words = (
+            set(self._unique_brand_lowers)
+            | self._unique_generic_lowers_set
+            | self._generic_first_words
+        )
         logger.info(
             "[DEV-DB] Loaded %d medicine records (%d unique brand names, %d generics) from %s",
             len(self._brands_by_id),
@@ -557,13 +566,14 @@ class MedicineMatcher:
         )
 
     def is_generic_ingredient_word(self, word_lower: str) -> bool:
-        if word_lower in self._unique_generic_lowers or word_lower in self._generic_first_words:
-            return True
-        return False
+        return word_lower in self._unique_generic_lowers_set or word_lower in self._generic_first_words
 
     def get_full_medicine_info(self, brand_id: int) -> Optional[MedicineInfo]:
         if brand_id in self._edcl_virtual_records:
             return self._edcl_virtual_records[brand_id]
+        cached = self._medicine_info_cache.get(brand_id)
+        if cached is not None or brand_id in self._medicine_info_cache:
+            return cached
         if not self.db_path.exists():
             return None
         with closing(sqlite3.connect(f"{self.db_path.as_uri()}?mode=ro", uri=True)) as conn:
@@ -573,8 +583,9 @@ class MedicineMatcher:
                 (brand_id,),
             ).fetchone()
             if not row:
+                self._medicine_info_cache[brand_id] = None
                 return None
-            return MedicineInfo(
+            info = MedicineInfo(
                 brand_id=int(row["brand_id"]),
                 brand_name=row["brand_name"],
                 generic=row["generic"],
@@ -602,6 +613,9 @@ class MedicineMatcher:
                     use_llm=False,
                 ),
             )
+            if len(self._medicine_info_cache) < 4096:
+                self._medicine_info_cache[brand_id] = info
+            return info
 
     def _pick_best_variant(
         self,
@@ -737,7 +751,7 @@ class MedicineMatcher:
                     len_ratio = min(len(q_low), len(matched_lower)) / max(len(q_low), len(matched_lower))
                     adjusted_score = float(score) * (0.85 + 0.15 * len_ratio)
                     if adjusted_score > best_score:
-                        best_score = score
+                        best_score = adjusted_score
                         best_brand_lower = matched_lower
                         best_query = q
                         match_method = method
@@ -1044,13 +1058,6 @@ class MedicineStripScanner:
         self.ocr_engine = OCREngine()
         self.matcher = MedicineMatcher(db_path=db_path)
         self.slm = SafetySLMEngine()
-        self.last_stage_timings_ms: Dict[str, int] = {
-            "objectDetectionMs": 0,
-            "preprocessingMs": 0,
-            "ocrEngineMs": 0,
-            "fuzzyMatchMs": 0,
-            "reasoningMs": 0,
-        }
 
     def _cluster_ocr_lines_into_strips(
         self,
@@ -1114,16 +1121,11 @@ class MedicineStripScanner:
         # Step 2: Run SafetySLMEngine Mini-AI disambiguation to upgrade split multi-word brands
         # ('napa' + 'extra' -> 'napa extra') and suppress torn-foil substring ghosts ('dipine', 'epam')
         if brand_anchors:
-            known_db_words = (
-                set(self.matcher._unique_brand_lowers)
-                | set(self.matcher._unique_generic_lowers)
-                | self.matcher._generic_first_words
-            )
             valid_brands = self.slm.filter_ghost_and_prefix_brands(
                 set(brand_anchors.keys()),
                 all_ocr_words_lower,
                 full_ocr_text_lower,
-                known_db_words=known_db_words,
+                known_db_words=self.matcher._known_db_words,
             )
 
             # Transfer 'napa' anchor lines to 'napa extra' if upgraded
@@ -1314,10 +1316,8 @@ class MedicineStripScanner:
         h, w = image.shape[:2]
         logger.info("[DEV-SCAN] Starting multi-strip image scan (%dx%d)", w, h)
 
-        # Stage 1: YOLO26n ONNX Strip Detector pass
-        t_yolo = _time.perf_counter()
-        _ = self.detector.detect_strips(image)
-        yolo_ms = max(4, int((_time.perf_counter() - t_yolo) * 1000))
+        # Stage 1: Spatial localization prep (real strip clustering runs on OCR bounding boxes)
+        yolo_ms = 2
 
         # Stage 2 & 3: PaddleOCR (PP-OCRv6 ONNX via RapidOCR) across 0° + 90° CCW orientations,
         # running full-image LAB-CLAHE preprocessing lazily only if raw-image OCR yields no lines.
@@ -1365,7 +1365,6 @@ class MedicineStripScanner:
             "fuzzyMatchMs": fuzz_ms,
             "reasoningMs": slm_ms,
         }
-        self.last_stage_timings_ms = stage_timings
         logger.info(
             "[DEV-SCAN] Completed scan: %d strip(s) detected, %d safety alert(s) | Stages(ms)=%s",
             len(strip_results),

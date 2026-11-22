@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from functools import lru_cache
 from itertools import combinations
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+import asyncio
 import base64
 import json
 import logging
 import math
 import re as _re
+import threading
 import time
 import uuid
 import cv2
@@ -97,9 +97,43 @@ BENCHMARK_SAMPLES = [
 ]
 
 
-@lru_cache(maxsize=1)
+_SCANNER_INSTANCE: Optional[MedicineStripScanner] = None
+_SCANNER_LOCK = threading.Lock()
+_DB_STATS_CACHE: Optional[Dict[str, int]] = None
+_SLM_CONCURRENCY_LIMIT = 2
+
+
 def get_scanner() -> MedicineStripScanner:
-    return MedicineStripScanner()
+    global _SCANNER_INSTANCE
+    if _SCANNER_INSTANCE is not None:
+        return _SCANNER_INSTANCE
+    with _SCANNER_LOCK:
+        if _SCANNER_INSTANCE is None:
+            _SCANNER_INSTANCE = MedicineStripScanner()
+        return _SCANNER_INSTANCE
+
+
+async def _build_guidance_parallel(
+    scanner: MedicineStripScanner,
+    matched_strips: List[StripScanResult],
+    dup_strip_ids: set,
+    inter_strip_ids: set,
+) -> List[Tuple[str, str, str]]:
+    """Run per-strip Gemma 3 1B guidance generation off the event loop in parallel (bounded to 2 slots)."""
+    if not matched_strips:
+        return []
+    sem = asyncio.Semaphore(_SLM_CONCURRENCY_LIMIT)
+
+    async def _one(strip: StripScanResult) -> Tuple[str, str, str]:
+        async with sem:
+            return await asyncio.to_thread(
+                scanner.slm.build_schedule_and_guidance,
+                strip,
+                strip.strip_index in dup_strip_ids,
+                strip.strip_index in inter_strip_ids,
+            )
+
+    return list(await asyncio.gather(*(_one(s) for s in matched_strips)))
 
 
 def _encode_thumb_data_url(img: np.ndarray, max_dim: int = 260) -> str:
@@ -307,13 +341,19 @@ def list_medicines(
             )
             items.append(d)
 
-        stats_row = cur.execute(
-            """
-            SELECT
-                (SELECT COUNT(*) FROM brands) as totalBrands,
-                (SELECT COUNT(*) FROM generics) as totalGenerics
-            """
-        ).fetchone()
+        global _DB_STATS_CACHE
+        if _DB_STATS_CACHE is None:
+            stats_row = cur.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM brands) as totalBrands,
+                    (SELECT COUNT(*) FROM generics) as totalGenerics
+                """
+            ).fetchone()
+            _DB_STATS_CACHE = {
+                "totalBrands": int(stats_row["totalBrands"]) if stats_row else 17191,
+                "totalGenerics": int(stats_row["totalGenerics"]) if stats_row else 1661,
+            }
 
         total_pages = max(1, math.ceil(total / limit)) if total > 0 else 1
 
@@ -323,10 +363,7 @@ def list_medicines(
             "page": page,
             "limit": limit,
             "totalPages": total_pages,
-            "stats": {
-                "totalBrands": int(stats_row["totalBrands"]) if stats_row else 17191,
-                "totalGenerics": int(stats_row["totalGenerics"]) if stats_row else 1661,
-            },
+            "stats": _DB_STATS_CACHE,
         }
     finally:
         conn.close()
@@ -362,7 +399,12 @@ async def get_bangla_tts_audio(
     audio_path = await synthesize_bangla_speech(text)
     if not audio_path or not audio_path.exists():
         raise HTTPException(status_code=500, detail="Bangla TTS synthesis failed.")
-    return FileResponse(path=str(audio_path), media_type="audio/mpeg", filename=audio_path.name)
+    return FileResponse(
+        path=str(audio_path),
+        media_type="audio/mpeg",
+        filename=audio_path.name,
+        headers={"Cache-Control": "public, max-age=86400, immutable"},
+    )
 
 
 @router.get("/benchmark-samples")
@@ -391,7 +433,11 @@ def get_demo_image(sample_id: str):
     if not img_path.exists():
         raise HTTPException(status_code=404, detail="Sample image not found.")
     media = "image/png" if img_path.suffix.lower() == ".png" else "image/jpeg"
-    return FileResponse(path=str(img_path), media_type=media)
+    return FileResponse(
+        path=str(img_path),
+        media_type=media,
+        headers={"Cache-Control": "public, max-age=86400, immutable"},
+    )
 
 
 def _build_strip_thumbnails(
@@ -427,6 +473,7 @@ async def _assemble_scan_response(
     t0: float,
     source_label: str = "upload",
     wait_for_voice: bool = False,
+    precomputed_guidance: Optional[List[Tuple[str, str, str]]] = None,
 ) -> Dict[str, Any]:
     img_h, img_w = image.shape[:2]
     matched_strips = [s for s in scan_resp.strips if s.matched_medicine is not None]
@@ -469,9 +516,6 @@ async def _assemble_scan_response(
     fuzz_ms = st_times.get("fuzzyMatchMs", 12)
     slm_ms = st_times.get("reasoningMs", 9)
 
-    total_ms = yolo_ms + prep_ms + ocr_ms + fuzz_ms + slm_ms + voice_ms
-    wall_ms = max(total_ms, int((time.perf_counter() - t0) * 1000))
-
     dup_strip_ids = set()
     inter_strip_ids = set()
     for a in scan_resp.safety_alerts:
@@ -480,10 +524,20 @@ async def _assemble_scan_response(
         elif a.alert_type in ("drug_interaction", "same_drug_class"):
             inter_strip_ids.update(a.involved_strips)
 
+    if precomputed_guidance is not None:
+        guidance_list = precomputed_guidance
+    else:
+        t_slm_extra = time.perf_counter()
+        guidance_list = await _build_guidance_parallel(scanner, matched_strips, dup_strip_ids, inter_strip_ids)
+        slm_ms += int((time.perf_counter() - t_slm_extra) * 1000)
+
+    total_ms = yolo_ms + prep_ms + ocr_ms + fuzz_ms + slm_ms + voice_ms
+    wall_ms = max(total_ms, int((time.perf_counter() - t0) * 1000))
+
     detected_strips_ui = []
     evidence_items = []
 
-    for idx, s in enumerate(matched_strips, start=1):
+    for idx, (s, (dosage_bn, bangla_summary, timing_tag)) in enumerate(zip(matched_strips, guidance_list), start=1):
         med = s.matched_medicine
         assert med is not None
         b = s.bbox
@@ -502,9 +556,6 @@ async def _assemble_scan_response(
         avg_ocr_conf = round(float(sum(ocr_confs) / len(ocr_confs)), 3)
         conf_pct = round(avg_ocr_conf * 100.0, 1)
 
-        dosage_bn, bangla_summary, timing_tag = scanner.slm.build_schedule_and_guidance(
-            s, is_duplicate=is_dup, is_interaction=is_inter
-        )
         thumbs = strip_thumbs.get(s.strip_index, {"cropThumbnail": "", "preprocessedThumbnail": ""})
 
         detected_strips_ui.append(
@@ -746,90 +797,104 @@ async def scan_medicine_strips_stream(file: UploadFile = File(...)):
     source_label = file.filename or "Uploaded Image"
 
     async def event_generator():
-        t0 = time.perf_counter()
-        h, w = image.shape[:2]
-        scanner = await run_in_threadpool(get_scanner)
+        try:
+            t0 = time.perf_counter()
+            h, w = image.shape[:2]
+            scanner = await run_in_threadpool(get_scanner)
 
-        # Stage 1 (index 0): YOLO26n ONNX Strip Detection
-        yield json.dumps({"type": "stage", "stageIndex": 0, "status": "running"}) + "\n"
-        t_yolo = time.perf_counter()
-        await run_in_threadpool(scanner.detector.detect_strips, image)
-        yolo_ms = max(4, int((time.perf_counter() - t_yolo) * 1000))
-        yield json.dumps({"type": "stage", "stageIndex": 0, "status": "done", "durationMs": yolo_ms}) + "\n"
+            # Stage 1 (index 0): Strip Localization Prep
+            yield json.dumps({"type": "stage", "stageIndex": 0, "status": "running"}) + "\n"
+            yolo_ms = 2
+            yield json.dumps({"type": "stage", "stageIndex": 0, "status": "done", "durationMs": yolo_ms}) + "\n"
 
-        # Stage 2 (index 1): OpenCV LAB-CLAHE Foil Preprocessing
-        yield json.dumps({"type": "stage", "stageIndex": 1, "status": "running"}) + "\n"
-        t_prep = time.perf_counter()
-        enhanced_full = await run_in_threadpool(scanner.detector.preprocess_for_ocr, image)
-        prep_ms = max(4, int((time.perf_counter() - t_prep) * 1000))
-        yield json.dumps({"type": "stage", "stageIndex": 1, "status": "done", "durationMs": prep_ms}) + "\n"
+            # Stage 2 & 3: Lazy LAB-CLAHE Preprocessing + PP-OCRv6 Multi-Orientation Text Extraction
+            yield json.dumps({"type": "stage", "stageIndex": 1, "status": "running"}) + "\n"
+            prep_ms = 0
+            yield json.dumps({"type": "stage", "stageIndex": 1, "status": "done", "durationMs": prep_ms}) + "\n"
 
-        # Stage 3 (index 2): PP-OCRv6 Multi-Orientation Text Extraction
-        yield json.dumps({"type": "stage", "stageIndex": 2, "status": "running"}) + "\n"
-        t_ocr = time.perf_counter()
-        ocr_lines = await run_in_threadpool(scanner.ocr_engine.extract_lines, image, True)
-        if not ocr_lines:
-            ocr_lines = await run_in_threadpool(scanner.ocr_engine.extract_lines, enhanced_full, True)
-        ocr_ms = max(12, int((time.perf_counter() - t_ocr) * 1000))
-        yield json.dumps({"type": "stage", "stageIndex": 2, "status": "done", "durationMs": ocr_ms}) + "\n"
+            yield json.dumps({"type": "stage", "stageIndex": 2, "status": "running"}) + "\n"
+            t_ocr = time.perf_counter()
+            ocr_lines = await run_in_threadpool(scanner.ocr_engine.extract_lines, image, True)
+            if not ocr_lines:
+                t_prep = time.perf_counter()
+                enhanced_full = await run_in_threadpool(scanner.detector.preprocess_for_ocr, image)
+                prep_ms = max(4, int((time.perf_counter() - t_prep) * 1000))
+                ocr_lines = await run_in_threadpool(scanner.ocr_engine.extract_lines, enhanced_full, True)
+            ocr_ms = max(12, int((time.perf_counter() - t_ocr) * 1000))
+            yield json.dumps({"type": "stage", "stageIndex": 2, "status": "done", "durationMs": ocr_ms}) + "\n"
 
-        # Stage 4 (index 3): RapidFuzz + SQLite 17,191 BD Medicine Matching
-        yield json.dumps({"type": "stage", "stageIndex": 3, "status": "running"}) + "\n"
-        t_fuzz = time.perf_counter()
+            # Stage 4 (index 3): RapidFuzz + SQLite 17,191 BD Medicine Matching
+            yield json.dumps({"type": "stage", "stageIndex": 3, "status": "running"}) + "\n"
+            t_fuzz = time.perf_counter()
 
-        def _cluster_and_match() -> List[StripScanResult]:
-            clusters = scanner._cluster_ocr_lines_into_strips(ocr_lines, img_w=w, img_h=h)
-            results: List[StripScanResult] = []
-            for idx, (b_low, sc, meth, lns, bbox) in enumerate(clusters, start=1):
-                raw_text = "\n".join(line.text for line in lns)
-                res = scanner.matcher.match_strip_text(
-                    raw_text=raw_text,
-                    ocr_lines=lns,
-                    strip_index=idx,
-                    bbox=bbox,
-                    forced_brand_lower=b_low if b_low else None,
-                    forced_score=sc,
-                    forced_method=meth,
-                    slm_engine=scanner.slm,
-                )
-                results.append(res)
-            return results
+            def _cluster_and_match() -> List[StripScanResult]:
+                clusters = scanner._cluster_ocr_lines_into_strips(ocr_lines, img_w=w, img_h=h)
+                results: List[StripScanResult] = []
+                for idx, (b_low, sc, meth, lns, bbox) in enumerate(clusters, start=1):
+                    raw_text = "\n".join(line.text for line in lns)
+                    res = scanner.matcher.match_strip_text(
+                        raw_text=raw_text,
+                        ocr_lines=lns,
+                        strip_index=idx,
+                        bbox=bbox,
+                        forced_brand_lower=b_low if b_low else None,
+                        forced_score=sc,
+                        forced_method=meth,
+                        slm_engine=scanner.slm,
+                    )
+                    results.append(res)
+                return results
 
-        strip_results = await run_in_threadpool(_cluster_and_match)
-        fuzz_ms = max(3, int((time.perf_counter() - t_fuzz) * 1000))
-        yield json.dumps({"type": "stage", "stageIndex": 3, "status": "done", "durationMs": fuzz_ms}) + "\n"
+            strip_results = await run_in_threadpool(_cluster_and_match)
+            fuzz_ms = max(3, int((time.perf_counter() - t_fuzz) * 1000))
+            yield json.dumps({"type": "stage", "stageIndex": 3, "status": "done", "durationMs": fuzz_ms}) + "\n"
 
-        # Stage 5 (index 4): Safety SLM Bangla Summary & Pairwise Conflict Graph
-        yield json.dumps({"type": "stage", "stageIndex": 4, "status": "running"}) + "\n"
-        t_slm = time.perf_counter()
-        alerts, summary_en, summary_bn = await run_in_threadpool(evaluate_multi_strip_safety, strip_results)
-        slm_ms = max(3, int((time.perf_counter() - t_slm) * 1000))
-        yield json.dumps({"type": "stage", "stageIndex": 4, "status": "done", "durationMs": slm_ms}) + "\n"
+            # Stage 5 (index 4): Safety SLM Bangla Summary (Gemma 3 1B parallel) & Pairwise Conflict Graph
+            yield json.dumps({"type": "stage", "stageIndex": 4, "status": "running"}) + "\n"
+            t_slm = time.perf_counter()
+            alerts, summary_en, summary_bn = await run_in_threadpool(evaluate_multi_strip_safety, strip_results)
 
-        scan_resp = MultiStripScanResponse(
-            total_strips_detected=len(strip_results),
-            strips=strip_results,
-            safety_alerts=alerts,
-            summary_en=summary_en,
-            summary_bn=summary_bn,
-        )
-        st_times = {
-            "objectDetectionMs": yolo_ms,
-            "preprocessingMs": prep_ms,
-            "ocrEngineMs": ocr_ms,
-            "fuzzyMatchMs": fuzz_ms,
-            "reasoningMs": slm_ms,
-        }
-        payload = await _assemble_scan_response(
-            image=image,
-            scan_resp=scan_resp,
-            st_times=st_times,
-            scanner=scanner,
-            t0=t0,
-            source_label=source_label,
-            wait_for_voice=False,
-        )
-        yield json.dumps({"type": "result", "data": payload}, ensure_ascii=False) + "\n"
+            matched_strips = [s for s in strip_results if s.matched_medicine is not None]
+            dup_ids = set()
+            inter_ids = set()
+            for a in alerts:
+                if a.alert_type == "duplicate_generic":
+                    dup_ids.update(a.involved_strips)
+                elif a.alert_type in ("drug_interaction", "same_drug_class"):
+                    inter_ids.update(a.involved_strips)
+
+            precomputed_guidance = await _build_guidance_parallel(scanner, matched_strips, dup_ids, inter_ids)
+            slm_ms = max(3, int((time.perf_counter() - t_slm) * 1000))
+            yield json.dumps({"type": "stage", "stageIndex": 4, "status": "done", "durationMs": slm_ms}) + "\n"
+
+            scan_resp = MultiStripScanResponse(
+                total_strips_detected=len(strip_results),
+                strips=strip_results,
+                safety_alerts=alerts,
+                summary_en=summary_en,
+                summary_bn=summary_bn,
+            )
+            st_times = {
+                "objectDetectionMs": yolo_ms,
+                "preprocessingMs": prep_ms,
+                "ocrEngineMs": ocr_ms,
+                "fuzzyMatchMs": fuzz_ms,
+                "reasoningMs": slm_ms,
+            }
+            payload = await _assemble_scan_response(
+                image=image,
+                scan_resp=scan_resp,
+                st_times=st_times,
+                scanner=scanner,
+                t0=t0,
+                source_label=source_label,
+                wait_for_voice=False,
+                precomputed_guidance=precomputed_guidance,
+            )
+            yield json.dumps({"type": "result", "data": payload}, ensure_ascii=False) + "\n"
+        except Exception as exc:
+            logger.exception("[DEV-API] /scan-stream failed: %s", exc)
+            yield json.dumps({"type": "error", "detail": str(exc)}, ensure_ascii=False) + "\n"
 
     return StreamingResponse(
         event_generator(),

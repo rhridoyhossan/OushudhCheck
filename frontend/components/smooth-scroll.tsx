@@ -36,11 +36,14 @@ export function SmoothScroll() {
     }
     rafId = window.requestAnimationFrame(raf);
 
-    // Recompute Lenis scroll bounds whenever page content dynamically grows/shrinks
-    // (e.g. scan results appearing, database pagination, pipeline telemetry expanding)
+    // Recompute Lenis scroll bounds (debounced) whenever page content dynamically grows/shrinks
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
     const resizeObserver = new ResizeObserver(() => {
-      lenis.resize();
-      ScrollTrigger.refresh();
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        lenis.resize();
+        ScrollTrigger.refresh();
+      }, 150);
     });
     resizeObserver.observe(document.body);
 
@@ -63,6 +66,7 @@ export function SmoothScroll() {
 
     return () => {
       window.cancelAnimationFrame(rafId);
+      if (resizeTimer) clearTimeout(resizeTimer);
       resizeObserver.disconnect();
       mutationObserver.disconnect();
       lenis.destroy();

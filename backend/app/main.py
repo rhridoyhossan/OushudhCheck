@@ -1,16 +1,26 @@
+from contextlib import asynccontextmanager
 import os
 from fastapi import FastAPI
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
 try:
-    from backend.app.api.routes import router as api_router
+    from backend.app.api.routes import get_scanner, router as api_router
 except ImportError:
-    from app.api.routes import router as api_router  # type: ignore
+    from app.api.routes import get_scanner, router as api_router  # type: ignore
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    await run_in_threadpool(get_scanner)
+    yield
+
 
 app = FastAPI(
     title="OushudhCheck FastAPI Backend",
     description="Read-only SQLite medicines.db API & Multi-Strip Safety Scanner Backend",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 _raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
