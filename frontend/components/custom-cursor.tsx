@@ -1,24 +1,41 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 type CursorMode = "default" | "interactive" | "heading" | "text";
+
+function subscribeFinePointer(callback: () => void) {
+  if (typeof window === "undefined") return () => {};
+  const mql = window.matchMedia("(pointer: fine)");
+  mql.addEventListener("change", callback);
+  return () => mql.removeEventListener("change", callback);
+}
+
+function getFinePointerSnapshot() {
+  if (typeof window === "undefined") return false;
+  return window.matchMedia("(pointer: fine)").matches;
+}
+
+function getServerSnapshot() {
+  return false;
+}
 
 export function CustomCursor() {
   const dotWrapRef = useRef<HTMLDivElement | null>(null);
   const ringWrapRef = useRef<HTMLDivElement | null>(null);
 
-  const [enabled, setEnabled] = useState(false);
+  const enabled = useSyncExternalStore(
+    subscribeFinePointer,
+    getFinePointerSnapshot,
+    getServerSnapshot
+  );
   const [visible, setVisible] = useState(false);
   const [mode, setMode] = useState<CursorMode>("default");
   const [isPressed, setIsPressed] = useState(false);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const isFinePointer = window.matchMedia("(pointer: fine)").matches;
-    if (!isFinePointer) return;
+    if (!enabled || typeof window === "undefined") return;
 
-    setEnabled(true);
     document.documentElement.classList.add("custom-cursor-active");
 
     let mouseX = -100;
@@ -108,7 +125,7 @@ export function CustomCursor() {
       document.removeEventListener("mouseenter", onMouseEnter);
       window.cancelAnimationFrame(rafId);
     };
-  }, []);
+  }, [enabled]);
 
   if (!enabled) return null;
 

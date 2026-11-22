@@ -1,4 +1,4 @@
-import { PresetScenario, ScanAnalysisResult } from "./types";
+import { PresetScenario } from "./types";
 
 export const PRESET_SCENARIOS: PresetScenario[] = [
   {

@@ -1,12 +1,46 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useRef } from "react";
 import Image from "next/image";
+import gsap from "gsap";
+import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { Check, Pill, Globe, MessageCircle, Share2, Shield } from "lucide-react";
 
+gsap.registerPlugin(ScrollTrigger);
+
 export function Footer() {
+  const footerRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const el = footerRef.current;
+    if (!el) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+    const ctx = gsap.context(() => {
+      gsap.fromTo(
+        el,
+        { opacity: 0, y: 20 },
+        {
+          opacity: 1,
+          y: 0,
+          duration: 0.75,
+          ease: "power2.out",
+          clearProps: "transform,opacity",
+          scrollTrigger: {
+            trigger: el,
+            start: "top 98%",
+            once: true,
+          },
+        }
+      );
+    }, footerRef);
+
+    return () => ctx.revert();
+  }, []);
+
   return (
     <footer
+      ref={footerRef}
       id="footer"
       className="max-w-5xl w-full mx-auto px-4 sm:px-6 pt-12 pb-8 text-[#46737a]"
     >
@@ -85,7 +119,7 @@ export function Footer() {
             {[Globe, MessageCircle, Share2, Shield, Pill].map((Icon, idx) => (
               <span
                 key={idx}
-                className="flex items-center justify-center size-7 rounded-full bg-[#0b5563] text-white hover:bg-[#0ea86b] transition cursor-pointer"
+                className="flex items-center justify-center size-7 rounded-full bg-[#0b5563] text-white"
               >
                 <Icon className="size-3.5" />
               </span>

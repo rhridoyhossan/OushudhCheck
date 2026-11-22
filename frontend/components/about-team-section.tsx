@@ -1,7 +1,8 @@
 "use client";
 
-import React from "react";
+import React, { useRef } from "react";
 import { Mail, Globe, ExternalLink } from "lucide-react";
+import { useParallaxZoom } from "@/components/scroll-reveal";
 
 function GitHubIcon({ className }: { className?: string }) {
   return (
@@ -49,8 +50,12 @@ const TEAM_MEMBERS: TeamMember[] = [
 ];
 
 export function AboutTeamSection() {
+  const sectionRef = useRef<HTMLElement | null>(null);
+  useParallaxZoom(sectionRef, "[data-reveal='scale']");
+
   return (
     <section
+      ref={sectionRef}
       id="about"
       className="relative max-w-5xl mx-auto px-4 sm:px-6 py-16"
     >
@@ -97,6 +102,7 @@ export function AboutTeamSection() {
             return (
               <div
                 key={member.githubUsername}
+                data-reveal="scale"
                 className="group relative flex flex-col items-center"
               >
                 {/* Top Circular Avatar Floating inside the U-Shaped Card Notch */}

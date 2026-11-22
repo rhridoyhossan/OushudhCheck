@@ -4,13 +4,42 @@ from pathlib import Path
 from typing import Optional
 import hashlib
 import logging
+import os
 import tempfile
+import uuid
 
 logger = logging.getLogger("oushudhcheck.voice")
 
 DEFAULT_BANGLA_VOICE = "bn-BD-NabanitaNeural"
 AUDIO_CACHE_DIR = Path(tempfile.gettempdir()) / "oushudhcheck_tts"
+MAX_TTS_CACHE_FILES = 200
+MAX_TTS_CACHE_BYTES = 100 * 1024 * 1024  # 100 MB
 _WHISPER_MODEL = None
+
+
+def _evict_tts_cache_if_needed() -> None:
+    """Keep the TTS disk cache bounded by file count and total size."""
+    try:
+        files = [
+            p for p in AUDIO_CACHE_DIR.glob("tts_*.mp3")
+            if p.is_file() and ".tmp." not in p.name
+        ]
+        if len(files) <= MAX_TTS_CACHE_FILES:
+            total_bytes = sum(p.stat().st_size for p in files)
+            if total_bytes <= MAX_TTS_CACHE_BYTES:
+                return
+        files.sort(key=lambda p: p.stat().st_mtime)
+        total_bytes = sum(p.stat().st_size for p in files)
+        while files and (len(files) > MAX_TTS_CACHE_FILES or total_bytes > MAX_TTS_CACHE_BYTES):
+            oldest = files.pop(0)
+            try:
+                sz = oldest.stat().st_size
+                oldest.unlink(missing_ok=True)
+                total_bytes -= sz
+            except OSError:
+                pass
+    except OSError:
+        pass
 
 
 def _get_faster_whisper_model():
@@ -81,14 +110,18 @@ async def synthesize_bangla_speech(
         logger.info("[DEV-VOICE] Returning cached Bangla TTS audio: %s (%d bytes)", out_path.name, out_path.stat().st_size)
         return out_path
 
+    tmp_path = AUDIO_CACHE_DIR / f"tts_{digest}.{uuid.uuid4().hex[:8]}.tmp.mp3"
     try:
         import edge_tts  # type: ignore
 
         logger.info("[DEV-VOICE] Synthesizing Bangla TTS (%s, rate=%s): %r", voice, rate, cleaned[:120])
         communicate = edge_tts.Communicate(text=cleaned, voice=voice, rate=rate)
-        await communicate.save(str(out_path))
+        await communicate.save(str(tmp_path))
+        os.replace(tmp_path, out_path)
+        _evict_tts_cache_if_needed()
         logger.info("[DEV-VOICE] Saved Bangla TTS audio -> %s (%d bytes)", out_path, out_path.stat().st_size)
         return out_path
     except Exception as exc:
+        tmp_path.unlink(missing_ok=True)
         logger.error("[DEV-VOICE] Bangla TTS synthesis failed: %s", exc)
         return None

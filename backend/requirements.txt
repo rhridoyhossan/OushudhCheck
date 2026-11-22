@@ -9,5 +9,4 @@ rapidfuzz>=3.9.0
 onnxruntime>=1.19.0
 rapidocr>=2.0.0
 faster-whisper>=1.0.0
-aiogram>=3.10.0
 edge-tts>=6.1.12

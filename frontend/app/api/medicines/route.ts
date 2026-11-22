@@ -7,10 +7,15 @@ import fs from "node:fs";
 const execFileAsync = promisify(execFile);
 
 const FASTAPI_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api/v1";
+  process.env.INTERNAL_API_URL ||
+  process.env.NEXT_PUBLIC_API_URL ||
+  "http://127.0.0.1:8000/api/v1";
 
 function resolveDatabasePath(): string {
   const candidates = [
+    process.env.MEDICINES_DB_PATH
+      ? path.resolve(process.env.MEDICINES_DB_PATH)
+      : "",
     path.resolve(process.cwd(), "..", "data", "processed", "medicines.db"),
     path.resolve(
       process.cwd(),
@@ -19,8 +24,7 @@ function resolveDatabasePath(): string {
       "processed",
       "medicines.db"
     ),
-    "D:/Desktop/ousod/OushudhCheck/data/processed/medicines.db",
-  ];
+  ].filter(Boolean);
 
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) {
@@ -34,11 +38,13 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const q = (searchParams.get("q") || "").trim();
   const dosageForm = (searchParams.get("dosageForm") || "All").trim();
-  const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
-  const limit = Math.min(
-    100,
-    Math.max(12, parseInt(searchParams.get("limit") || "24", 10))
-  );
+  const parsedPage = Number.parseInt(searchParams.get("page") || "1", 10);
+  const parsedLimit = Number.parseInt(searchParams.get("limit") || "24", 10);
+  const page = Number.isFinite(parsedPage) && parsedPage >= 1 ? parsedPage : 1;
+  const limit =
+    Number.isFinite(parsedLimit) && parsedLimit >= 1
+      ? Math.min(100, parsedLimit)
+      : 24;
 
   // 1. Primary Path: Try FastAPI Backend at http://127.0.0.1:8000/api/v1/medicines
   try {
@@ -175,7 +181,7 @@ print(json.dumps({
     const { stdout } = await execFileAsync(
       "python",
       ["-c", pyScript, dbPath, q, dosageForm, String(page), String(limit)],
-      { maxBuffer: 10 * 1024 * 1024 }
+      { maxBuffer: 10 * 1024 * 1024, timeout: 5000 }
     );
 
     const parsed = JSON.parse(stdout);
@@ -184,8 +190,7 @@ print(json.dumps({
     console.error("Database query error:", error);
     return NextResponse.json(
       {
-        error: "Failed to read medicines.db",
-        details: error instanceof Error ? error.message : String(error),
+        error: "Failed to read medicines database.",
       },
       { status: 500 }
     );

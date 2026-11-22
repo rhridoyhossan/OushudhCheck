@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from itertools import combinations
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import base64
+import json
 import logging
 import math
 import re as _re
 import time
+import uuid
 import cv2
 import numpy as np
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse, StreamingResponse
 
 try:
     from backend.app.core.config import PROJECT_ROOT, get_readonly_db_connection
@@ -23,7 +27,7 @@ try:
         StripScanResult,
         TextExtractRequest,
     )
-    from backend.app.services.ocr import MedicineStripScanner
+    from backend.app.services.ocr import MedicineStripScanner, evaluate_multi_strip_safety
     from backend.app.services.slm import generate_bangla_beginner_summary
     from backend.app.services.voice import synthesize_bangla_speech
 except ImportError:
@@ -36,7 +40,7 @@ except ImportError:
         StripScanResult,
         TextExtractRequest,
     )
-    from app.services.ocr import MedicineStripScanner  # type: ignore
+    from app.services.ocr import MedicineStripScanner, evaluate_multi_strip_safety  # type: ignore
     from app.services.slm import generate_bangla_beginner_summary  # type: ignore
     from app.services.voice import synthesize_bangla_speech  # type: ignore
 
@@ -44,6 +48,8 @@ logger = logging.getLogger("oushudhcheck.api")
 router = APIRouter()
 
 TEST_DIR = PROJECT_ROOT / "test"
+MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB hard cap
+MAX_IMAGE_PIXELS = 25_000_000  # ~25 MP decompression bomb guard
 
 BENCHMARK_SAMPLES = [
     {
@@ -146,8 +152,10 @@ def _build_safety_edges(
             }
         )
         if len(a.involved_strips) >= 2:
-            s_a, s_b = min(a.involved_strips[0], a.involved_strips[1]), max(a.involved_strips[0], a.involved_strips[1])
-            flagged_pairs.add((s_a, s_b))
+            for s_x, s_y in combinations(a.involved_strips, 2):
+                flagged_pairs.add((min(s_x, s_y), max(s_x, s_y)))
+            if len(a.involved_brands) > 2:
+                edges[-1]["targetBrand"] = ", ".join(a.involved_brands[1:])
 
     # Add verified-safe pairwise edges so judges see the full pairwise graph evaluation
     for i in range(len(matched_strips)):
@@ -224,16 +232,17 @@ def list_medicines(
         params = []
 
         if q_clean:
+            escaped_q = q_clean.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             where_clauses.append(
                 "("
-                "b.brand_lower LIKE ? OR "
-                "b.generic_lower LIKE ? OR "
-                "LOWER(COALESCE(b.manufacturer, '')) LIKE ? OR "
-                "LOWER(COALESCE(g.drug_class, '')) LIKE ? OR "
-                "LOWER(COALESCE(g.indication, '')) LIKE ?"
+                "b.brand_lower LIKE ? ESCAPE '\\' OR "
+                "b.generic_lower LIKE ? ESCAPE '\\' OR "
+                "LOWER(COALESCE(b.manufacturer, '')) LIKE ? ESCAPE '\\' OR "
+                "LOWER(COALESCE(g.drug_class, '')) LIKE ? ESCAPE '\\' OR "
+                "LOWER(COALESCE(g.indication, '')) LIKE ? ESCAPE '\\'"
                 ")"
             )
-            pattern = f"%{q_clean}%"
+            pattern = f"%{escaped_q}%"
             params.extend([pattern, pattern, pattern, pattern, pattern])
 
         if form_clean and form_clean != "All":
@@ -273,13 +282,14 @@ def list_medicines(
             ORDER BY
                 CASE
                     WHEN ? != '' AND b.brand_lower = ? THEN 0
-                    WHEN ? != '' AND b.brand_lower LIKE ? THEN 1
+                    WHEN ? != '' AND b.brand_lower LIKE ? ESCAPE '\\' THEN 1
                     ELSE 2
                 END,
                 b.brand_name ASC
             LIMIT ? OFFSET ?
         """
-        prefix_pattern = f"{q_clean}%"
+        escaped_prefix = q_clean.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        prefix_pattern = f"{escaped_prefix}%"
         data_params = [*params, q_clean, q_clean, q_clean, prefix_pattern, limit, offset]
         rows = cur.execute(data_sql, data_params).fetchall()
         items = []
@@ -322,7 +332,7 @@ def list_medicines(
 
 
 @router.get("/medicines/search", response_model=List[MedicineInfo])
-async def search_medicines(
+def search_medicines(
     q: str = Query(..., min_length=2, description="Brand or generic name to search"),
     limit: int = Query(10, ge=1, le=50),
 ) -> List[MedicineInfo]:
@@ -331,13 +341,13 @@ async def search_medicines(
 
 
 @router.post("/extract-text", response_model=StripScanResult)
-async def extract_from_single_strip_text(payload: TextExtractRequest) -> StripScanResult:
+def extract_from_single_strip_text(payload: TextExtractRequest) -> StripScanResult:
     scanner = get_scanner()
     return scanner.matcher.match_strip_text(raw_text=payload.text, strip_index=1, slm_engine=scanner.slm)
 
 
 @router.post("/extract-multi-text", response_model=MultiStripScanResponse)
-async def extract_from_multiple_strip_texts(payload: MultiTextExtractRequest) -> MultiStripScanResponse:
+def extract_from_multiple_strip_texts(payload: MultiTextExtractRequest) -> MultiStripScanResponse:
     if not payload.strip_texts:
         raise HTTPException(status_code=400, detail="strip_texts cannot be empty.")
     scanner = get_scanner()
@@ -346,7 +356,7 @@ async def extract_from_multiple_strip_texts(payload: MultiTextExtractRequest) ->
 
 @router.get("/tts")
 async def get_bangla_tts_audio(
-    text: str = Query(..., min_length=1, description="Bangla text to synthesize into speech"),
+    text: str = Query(..., min_length=1, max_length=1500, description="Bangla text to synthesize into speech"),
 ):
     audio_path = await synthesize_bangla_speech(text)
     if not audio_path or not audio_path.exists():
@@ -373,7 +383,9 @@ def list_benchmark_samples():
 @router.get("/demo-image/{sample_id}")
 def get_demo_image(sample_id: str):
     """Serves a real demo photo from `test/` for the `/pipeline` page."""
-    sample = next((s for s in BENCHMARK_SAMPLES if s["id"] == sample_id), BENCHMARK_SAMPLES[0])
+    sample = next((s for s in BENCHMARK_SAMPLES if s["id"] == sample_id), None)
+    if sample is None:
+        raise HTTPException(status_code=404, detail=f"Unknown sample_id: {sample_id}")
     img_path = TEST_DIR / sample["filename"]
     if not img_path.exists():
         raise HTTPException(status_code=404, detail="Sample image not found.")
@@ -381,47 +393,12 @@ def get_demo_image(sample_id: str):
     return FileResponse(path=str(img_path), media_type=media)
 
 
-async def _execute_full_scan_pipeline(
+def _build_strip_thumbnails(
     image: np.ndarray,
-    source_label: str = "upload",
-    wait_for_voice: bool = False,
-) -> Dict[str, Any]:
-    """
-    Runs the complete AI pipeline on an OpenCV image, measuring exact per-stage execution
-    times in milliseconds and producing cropped + CLAHE-preprocessed thumbnails.
-    Returns medicine scan results ASAP without blocking on network TTS synthesis, providing
-    `audioUrl` so the frontend can pre-fetch/stream the Bangla voice audio asynchronously.
-    """
-    t0 = time.perf_counter()
-    scanner = get_scanner()
+    matched_strips: List[StripScanResult],
+    scanner: MedicineStripScanner,
+) -> Dict[int, Dict[str, str]]:
     img_h, img_w = image.shape[:2]
-
-    scan_resp = scanner.scan_image(image)
-    matched_strips = [s for s in scan_resp.strips if s.matched_medicine is not None]
-
-    t_voice = time.perf_counter()
-    from urllib.parse import quote
-
-    concise_voice_parts = [f"আপনার ছবিতে {len(matched_strips)}টি ওষুধের পাতা শনাক্ত করা হয়েছে।"]
-    for idx, s in enumerate(matched_strips, start=1):
-        m = s.matched_medicine
-        if m:
-            st = s.extracted_strength or ""
-            concise_voice_parts.append(f"স্ট্রিপ {idx}: {m.brand_name} {st}, জেনেরিক {m.generic}।")
-    for a in scan_resp.safety_alerts:
-        concise_voice_parts.append(a.message_bn)
-    if not scan_resp.safety_alerts and matched_strips:
-        concise_voice_parts.append("ওষুধগুলোতে কোনো ডুপ্লিকেট বা ঝুঁকিপূর্ণ আন্তঃক্রিয়া পাওয়া যায়নি।")
-
-    concise_voice_script = " ".join(concise_voice_parts)
-    audio_url: Optional[str] = f"/api/v1/tts?text={quote(concise_voice_script)}" if matched_strips else None
-
-    if wait_for_voice and matched_strips:
-        await synthesize_bangla_speech(concise_voice_script)
-    voice_ms = max(8, int((time.perf_counter() - t_voice) * 1000))
-
-    # Extract per-strip cropped and CLAHE-preprocessed thumbnails (also accounting for preprocessing time)
-    t_thumb = time.perf_counter()
     strip_thumbs: Dict[int, Dict[str, str]] = {}
     for s in matched_strips:
         b = s.bbox
@@ -438,11 +415,55 @@ async def _execute_full_scan_pipeline(
             "cropThumbnail": _encode_thumb_data_url(crop_img),
             "preprocessedThumbnail": _encode_thumb_data_url(prep_img),
         }
+    return strip_thumbs
+
+
+async def _assemble_scan_response(
+    image: np.ndarray,
+    scan_resp: MultiStripScanResponse,
+    st_times: Dict[str, int],
+    scanner: MedicineStripScanner,
+    t0: float,
+    source_label: str = "upload",
+    wait_for_voice: bool = False,
+) -> Dict[str, Any]:
+    img_h, img_w = image.shape[:2]
+    matched_strips = [s for s in scan_resp.strips if s.matched_medicine is not None]
+
+    t_voice = time.perf_counter()
+    from urllib.parse import quote
+
+    if matched_strips:
+        concise_voice_parts = [f"আপনার ছবিতে {len(matched_strips)}টি ওষুধের পাতা শনাক্ত করা হয়েছে।"]
+        for idx, s in enumerate(matched_strips, start=1):
+            m = s.matched_medicine
+            if m:
+                st = s.extracted_strength or ""
+                concise_voice_parts.append(f"স্ট্রিপ {idx}: {m.brand_name} {st}, জেনেরিক {m.generic}।")
+        for a in scan_resp.safety_alerts:
+            concise_voice_parts.append(a.message_bn)
+        if not scan_resp.safety_alerts:
+            concise_voice_parts.append("ওষুধগুলোতে কোনো ডুপ্লিকেট বা ঝুঁকিপূর্ণ আন্তঃক্রিয়া পাওয়া যায়নি।")
+        concise_voice_script = " ".join(concise_voice_parts)
+        audio_url: Optional[str] = f"/api/v1/tts?text={quote(concise_voice_script[:1400])}"
+    else:
+        concise_voice_script = scan_resp.summary_bn
+        audio_url = None
+
+    if wait_for_voice and matched_strips:
+        await synthesize_bangla_speech(concise_voice_script)
+        voice_ms = max(8, int((time.perf_counter() - t_voice) * 1000))
+    else:
+        # Voice synthesis runs asynchronously on the client via /api/v1/tts
+        voice_ms = 0
+
+    # Extract per-strip cropped and CLAHE-preprocessed thumbnails in threadpool
+    t_thumb = time.perf_counter()
+    strip_thumbs = await run_in_threadpool(_build_strip_thumbnails, image, matched_strips, scanner)
     thumb_prep_ms = max(2, int((time.perf_counter() - t_thumb) * 1000))
 
-    st_times = scanner.last_stage_timings_ms
     yolo_ms = st_times.get("objectDetectionMs", 18)
-    prep_ms = st_times.get("preprocessingMs", 14) + thumb_prep_ms
+    prep_ms = st_times.get("preprocessingMs", 0) + thumb_prep_ms
     ocr_ms = st_times.get("ocrEngineMs", 420)
     fuzz_ms = st_times.get("fuzzyMatchMs", 12)
     slm_ms = st_times.get("reasoningMs", 9)
@@ -640,7 +661,7 @@ async def _execute_full_scan_pipeline(
     }
 
     return {
-        "scanId": f"SCN-LIVE-{int(time.time())}",
+        "scanId": f"SCN-LIVE-{int(time.time())}-{uuid.uuid4().hex[:6]}",
         "timestamp": f"YOLO26 ONNX + PP-OCRv6 + RapidFuzz + Safety SLM • {total_ms}ms",
         "inferenceTimeMs": total_ms,
         "pipelineMetrics": {
@@ -660,17 +681,159 @@ async def _execute_full_scan_pipeline(
     }
 
 
-@router.post("/scan")
-async def scan_medicine_strips(file: UploadFile = File(...)):
-    content = await file.read()
-    logger.info("[DEV-API] POST /scan received file=%r (%d bytes)", file.filename, len(content) if content else 0)
+async def _execute_full_scan_pipeline(
+    image: np.ndarray,
+    source_label: str = "upload",
+    wait_for_voice: bool = False,
+) -> Dict[str, Any]:
+    """
+    Runs the complete AI pipeline on an OpenCV image, measuring exact per-stage execution
+    times in milliseconds and producing cropped + CLAHE-preprocessed thumbnails.
+    """
+    t0 = time.perf_counter()
+    scanner = await run_in_threadpool(get_scanner)
+    scan_resp, st_times = await run_in_threadpool(scanner.scan_image_with_timings, image)
+    return await _assemble_scan_response(
+        image=image,
+        scan_resp=scan_resp,
+        st_times=st_times,
+        scanner=scanner,
+        t0=t0,
+        source_label=source_label,
+        wait_for_voice=wait_for_voice,
+    )
+
+
+def _decode_image_bytes(content: bytes) -> Optional[np.ndarray]:
+    arr = np.frombuffer(content, dtype=np.uint8)
+    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+
+async def _read_and_validate_upload(file: UploadFile) -> np.ndarray:
+    content = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Uploaded image exceeds maximum allowed size of {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.",
+        )
+    logger.info("[DEV-API] Received upload file=%r (%d bytes)", file.filename, len(content) if content else 0)
     if not content:
         raise HTTPException(status_code=400, detail="Uploaded image file is empty.")
-    arr = np.frombuffer(content, dtype=np.uint8)
-    image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    image = await run_in_threadpool(_decode_image_bytes, content)
     if image is None:
         raise HTTPException(status_code=400, detail="Could not decode image.")
+    h, w = image.shape[:2]
+    if h * w > MAX_IMAGE_PIXELS:
+        raise HTTPException(status_code=400, detail="Uploaded image resolution is too large.")
+    return image
+
+
+@router.post("/scan")
+async def scan_medicine_strips(file: UploadFile = File(...)):
+    image = await _read_and_validate_upload(file)
     return await _execute_full_scan_pipeline(image, source_label=file.filename or "Uploaded Image")
+
+
+@router.post("/scan-stream")
+async def scan_medicine_strips_stream(file: UploadFile = File(...)):
+    """
+    Streams real-time NDJSON progress events as each AI pipeline stage executes on the backend,
+    followed by the final scan result payload.
+    """
+    image = await _read_and_validate_upload(file)
+    source_label = file.filename or "Uploaded Image"
+
+    async def event_generator():
+        t0 = time.perf_counter()
+        h, w = image.shape[:2]
+        scanner = await run_in_threadpool(get_scanner)
+
+        # Stage 1 (index 0): YOLO26n ONNX Strip Detection
+        yield json.dumps({"type": "stage", "stageIndex": 0, "status": "running"}) + "\n"
+        t_yolo = time.perf_counter()
+        await run_in_threadpool(scanner.detector.detect_strips, image)
+        yolo_ms = max(4, int((time.perf_counter() - t_yolo) * 1000))
+        yield json.dumps({"type": "stage", "stageIndex": 0, "status": "done", "durationMs": yolo_ms}) + "\n"
+
+        # Stage 2 (index 1): OpenCV LAB-CLAHE Foil Preprocessing
+        yield json.dumps({"type": "stage", "stageIndex": 1, "status": "running"}) + "\n"
+        t_prep = time.perf_counter()
+        enhanced_full = await run_in_threadpool(scanner.detector.preprocess_for_ocr, image)
+        prep_ms = max(4, int((time.perf_counter() - t_prep) * 1000))
+        yield json.dumps({"type": "stage", "stageIndex": 1, "status": "done", "durationMs": prep_ms}) + "\n"
+
+        # Stage 3 (index 2): PP-OCRv6 Multi-Orientation Text Extraction
+        yield json.dumps({"type": "stage", "stageIndex": 2, "status": "running"}) + "\n"
+        t_ocr = time.perf_counter()
+        ocr_lines = await run_in_threadpool(scanner.ocr_engine.extract_lines, image, True)
+        if not ocr_lines:
+            ocr_lines = await run_in_threadpool(scanner.ocr_engine.extract_lines, enhanced_full, True)
+        ocr_ms = max(12, int((time.perf_counter() - t_ocr) * 1000))
+        yield json.dumps({"type": "stage", "stageIndex": 2, "status": "done", "durationMs": ocr_ms}) + "\n"
+
+        # Stage 4 (index 3): RapidFuzz + SQLite 17,191 BD Medicine Matching
+        yield json.dumps({"type": "stage", "stageIndex": 3, "status": "running"}) + "\n"
+        t_fuzz = time.perf_counter()
+
+        def _cluster_and_match() -> List[StripScanResult]:
+            clusters = scanner._cluster_ocr_lines_into_strips(ocr_lines, img_w=w, img_h=h)
+            results: List[StripScanResult] = []
+            for idx, (b_low, sc, meth, lns, bbox) in enumerate(clusters, start=1):
+                raw_text = "\n".join(line.text for line in lns)
+                res = scanner.matcher.match_strip_text(
+                    raw_text=raw_text,
+                    ocr_lines=lns,
+                    strip_index=idx,
+                    bbox=bbox,
+                    forced_brand_lower=b_low if b_low else None,
+                    forced_score=sc,
+                    forced_method=meth,
+                    slm_engine=scanner.slm,
+                )
+                results.append(res)
+            return results
+
+        strip_results = await run_in_threadpool(_cluster_and_match)
+        fuzz_ms = max(3, int((time.perf_counter() - t_fuzz) * 1000))
+        yield json.dumps({"type": "stage", "stageIndex": 3, "status": "done", "durationMs": fuzz_ms}) + "\n"
+
+        # Stage 5 (index 4): Safety SLM Bangla Summary & Pairwise Conflict Graph
+        yield json.dumps({"type": "stage", "stageIndex": 4, "status": "running"}) + "\n"
+        t_slm = time.perf_counter()
+        alerts, summary_en, summary_bn = await run_in_threadpool(evaluate_multi_strip_safety, strip_results)
+        slm_ms = max(3, int((time.perf_counter() - t_slm) * 1000))
+        yield json.dumps({"type": "stage", "stageIndex": 4, "status": "done", "durationMs": slm_ms}) + "\n"
+
+        scan_resp = MultiStripScanResponse(
+            total_strips_detected=len(strip_results),
+            strips=strip_results,
+            safety_alerts=alerts,
+            summary_en=summary_en,
+            summary_bn=summary_bn,
+        )
+        st_times = {
+            "objectDetectionMs": yolo_ms,
+            "preprocessingMs": prep_ms,
+            "ocrEngineMs": ocr_ms,
+            "fuzzyMatchMs": fuzz_ms,
+            "reasoningMs": slm_ms,
+        }
+        payload = await _assemble_scan_response(
+            image=image,
+            scan_resp=scan_resp,
+            st_times=st_times,
+            scanner=scanner,
+            t0=t0,
+            source_label=source_label,
+            wait_for_voice=False,
+        )
+        yield json.dumps({"type": "result", "data": payload}, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/scan-benchmark")
@@ -681,7 +844,9 @@ async def run_sample_benchmark_scan(
     Executes the real 6-stage AI pipeline live on a real medicine strip image from `test/`
     so judges can re-run and inspect real execution times and cropped thumbnails at any time.
     """
-    sample = next((s for s in BENCHMARK_SAMPLES if s["id"] == sample_id), BENCHMARK_SAMPLES[0])
+    sample = next((s for s in BENCHMARK_SAMPLES if s["id"] == sample_id), None)
+    if sample is None:
+        raise HTTPException(status_code=404, detail=f"Unknown benchmark sample_id: {sample_id}")
     img_path = TEST_DIR / sample["filename"]
     if not img_path.exists():
         # Fallback to first existing image in test/
@@ -690,7 +855,7 @@ async def run_sample_benchmark_scan(
             raise HTTPException(status_code=404, detail="No test images found in test/ directory.")
         img_path = existing[0]
 
-    image = cv2.imread(str(img_path))
+    image = await run_in_threadpool(cv2.imread, str(img_path))
     if image is None:
         raise HTTPException(status_code=500, detail=f"Failed to read benchmark image {img_path.name}")
 

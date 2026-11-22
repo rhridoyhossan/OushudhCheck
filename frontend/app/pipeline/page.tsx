@@ -4,7 +4,7 @@ import React, { useEffect, useState, useRef, useCallback } from "react";
 import { Navbar } from "@/components/navbar";
 import { Footer } from "@/components/footer";
 import { AITransparencyInspector } from "@/components/ai-transparency-inspector";
-import { BACKEND_ORIGIN, analyzeMedicineImage } from "@/lib/api";
+import { BACKEND_ORIGIN, analyzeMedicineImageStream } from "@/lib/api";
 import {
   BoundingBox,
   MedicineDatabaseRecord,
@@ -88,8 +88,19 @@ export default function PipelineInspectorPage() {
   const [analysis, setAnalysis] = useState<ScanAnalysisResult | null>(null);
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [activeStageIdx, setActiveStageIdx] = useState<number>(0);
+  const [liveStageStatuses, setLiveStageStatuses] = useState<
+    Array<"pending" | "running" | "done">
+  >(["pending", "pending", "pending", "pending", "pending", "pending"]);
+  const [liveStageTimings, setLiveStageTimings] = useState<
+    Array<number | null>
+  >([null, null, null, null, null, null]);
   const [elapsedMs, setElapsedMs] = useState<number>(0);
-  const [isVoiceLoading, setIsVoiceLoading] = useState<boolean>(false);
+  const [voiceLoadedForKey, setVoiceLoadedForKey] = useState<string | null>(
+    null
+  );
+  const [voiceFailedForKey, setVoiceFailedForKey] = useState<string | null>(
+    null
+  );
   const [readyAudioBlobUrl, setReadyAudioBlobUrl] = useState<string | null>(
     null
   );
@@ -99,29 +110,91 @@ export default function PipelineInspectorPage() {
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const uploadedPreviewUrlRef = useRef<string | null>(null);
+
+  const activeVoiceKey = analysis?.audioUrl
+    ? `${analysis.scanId}:${analysis.audioUrl}`
+    : null;
+  const isVoiceLoading = Boolean(
+    activeVoiceKey &&
+      voiceLoadedForKey !== activeVoiceKey &&
+      voiceFailedForKey !== activeVoiceKey
+  );
+  const isVoiceReady = Boolean(
+    activeVoiceKey && voiceLoadedForKey === activeVoiceKey && readyAudioBlobUrl
+  );
+
+  // Lock background page scroll and allow Escape key to close clinical modal cleanly
+  useEffect(() => {
+    if (!activeMedicine) return;
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setActiveMedicine(null);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = originalOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [activeMedicine]);
+
+  useEffect(() => {
+    uploadedPreviewUrlRef.current = uploadedPreviewUrl;
+  }, [uploadedPreviewUrl]);
+
+  // Revoke preview URL & stop audio playback on unmount
+  useEffect(() => {
+    return () => {
+      if (uploadedPreviewUrlRef.current?.startsWith("blob:")) {
+        URL.revokeObjectURL(uploadedPreviewUrlRef.current);
+      }
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
 
   // Pre-fetch Bangla TTS audio asynchronously in background after scan results appear
   useEffect(() => {
-    if (!analysis?.audioUrl) {
-      setIsVoiceLoading(false);
+    if (!activeVoiceKey || !analysis?.audioUrl) {
       return;
     }
     let cancelled = false;
-    setIsVoiceLoading(true);
-    setReadyAudioBlobUrl(null);
-    const tVoice0 = performance.now();
+    let createdObjUrl: string | null = null;
+    const controller = new AbortController();
+    const tVoice0 = Date.now();
 
     const fullAudioUrl = analysis.audioUrl.startsWith("http")
       ? analysis.audioUrl
       : `${BACKEND_ORIGIN}${analysis.audioUrl}`;
 
-    fetch(fullAudioUrl)
+    fetch(fullAudioUrl, { signal: controller.signal })
       .then((res) => (res.ok ? res.blob() : Promise.reject(new Error("TTS failed"))))
       .then((blob) => {
         if (cancelled) return;
-        const voiceElapsed = Math.max(12, Math.round(performance.now() - tVoice0));
-        setReadyAudioBlobUrl(URL.createObjectURL(blob));
-        setIsVoiceLoading(false);
+        const voiceElapsed = Math.max(12, Math.round(Date.now() - tVoice0));
+        const objUrl = URL.createObjectURL(blob);
+        createdObjUrl = objUrl;
+        setReadyAudioBlobUrl(objUrl);
+        setVoiceLoadedForKey(activeVoiceKey);
+        setLiveStageStatuses((prev) => {
+          const next = [...prev];
+          next[5] = "done";
+          return next;
+        });
+        setLiveStageTimings((prev) => {
+          const next = [...prev];
+          next[5] = voiceElapsed;
+          return next;
+        });
         setAnalysis((prev) => {
           if (!prev || !prev.transparencyInspector) return prev;
           const updatedStages = prev.transparencyInspector.stages.map((st) =>
@@ -130,6 +203,7 @@ export default function PipelineInspectorPage() {
           const newTotal = updatedStages.reduce((acc, s) => acc + s.durationMs, 0);
           return {
             ...prev,
+            inferenceTimeMs: newTotal,
             transparencyInspector: {
               ...prev.transparencyInspector,
               totalTurnaroundMs: newTotal,
@@ -139,28 +213,82 @@ export default function PipelineInspectorPage() {
         });
       })
       .catch(() => {
-        if (!cancelled) setIsVoiceLoading(false);
+        if (!cancelled) {
+          setVoiceFailedForKey(activeVoiceKey);
+          setLiveStageStatuses((prev) => {
+            const next = [...prev];
+            next[5] = "done";
+            return next;
+          });
+        }
       });
 
     return () => {
       cancelled = true;
+      controller.abort();
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      if (createdObjUrl) {
+        URL.revokeObjectURL(createdObjUrl);
+      }
     };
-  }, [analysis?.scanId, analysis?.audioUrl]);
+  }, [activeVoiceKey, analysis?.audioUrl]);
 
   const executeUploadedScan = useCallback(async (file: File) => {
     setIsRunning(true);
     setActiveStageIdx(0);
+    setLiveStageStatuses([
+      "running",
+      "pending",
+      "pending",
+      "pending",
+      "pending",
+      "pending",
+    ]);
+    setLiveStageTimings([null, null, null, null, null, null]);
     setElapsedMs(0);
 
-    const t0 = performance.now();
+    const t0 = Date.now();
     const stageTimer = setInterval(() => {
-      const nowMs = Math.round(performance.now() - t0);
-      setElapsedMs(nowMs);
-      setActiveStageIdx((prev) => Math.min(5, prev + 1));
-    }, 420);
+      setElapsedMs(Math.round(Date.now() - t0));
+    }, 100);
 
     try {
-      const { data, isLiveBackend } = await analyzeMedicineImage(file);
+      const { data, isLiveBackend } = await analyzeMedicineImageStream(
+        file,
+        (ev) => {
+          if (ev.stageIndex < 0 || ev.stageIndex >= 5) return;
+          setActiveStageIdx(ev.stageIndex);
+          setLiveStageStatuses((prev) => {
+            const next = [...prev];
+            for (let i = 0; i < ev.stageIndex; i++) {
+              next[i] = "done";
+            }
+            next[ev.stageIndex] = ev.status;
+            return next;
+          });
+          if (ev.status === "done" && typeof ev.durationMs === "number") {
+            setLiveStageTimings((prev) => {
+              const next = [...prev];
+              next[ev.stageIndex] = ev.durationMs ?? null;
+              return next;
+            });
+          }
+        }
+      );
+      setReadyAudioBlobUrl(null);
+      setIsPlayingVoice(false);
+      setLiveStageStatuses([
+        "done",
+        "done",
+        "done",
+        "done",
+        "done",
+        data.audioUrl ? "running" : "done",
+      ]);
+      setActiveStageIdx(5);
       setAnalysis(data);
       toast.success(
         isLiveBackend
@@ -170,9 +298,23 @@ export default function PipelineInspectorPage() {
           description: `${data.detectedStrips.length} medicine strip(s) verified with real telemetry`,
         }
       );
+    } catch (err) {
+      setLiveStageStatuses([
+        "pending",
+        "pending",
+        "pending",
+        "pending",
+        "pending",
+        "pending",
+      ]);
+      toast.error("Pipeline Scan Failed", {
+        description:
+          err instanceof Error
+            ? err.message
+            : "Could not analyze the uploaded image. Please try again.",
+      });
     } finally {
       clearInterval(stageTimer);
-      setActiveStageIdx(5);
       setIsRunning(false);
     }
   }, []);
@@ -189,6 +331,15 @@ export default function PipelineInspectorPage() {
     setUploadedFile(file);
     setUploadedPreviewUrl(URL.createObjectURL(file));
     setAnalysis(null);
+    setLiveStageStatuses([
+      "pending",
+      "pending",
+      "pending",
+      "pending",
+      "pending",
+      "pending",
+    ]);
+    setLiveStageTimings([null, null, null, null, null, null]);
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -210,6 +361,15 @@ export default function PipelineInspectorPage() {
     setUploadedFile(null);
     setUploadedPreviewUrl(null);
     setAnalysis(null);
+    setLiveStageStatuses([
+      "pending",
+      "pending",
+      "pending",
+      "pending",
+      "pending",
+      "pending",
+    ]);
+    setLiveStageTimings([null, null, null, null, null, null]);
     setReadyAudioBlobUrl(null);
     setIsPlayingVoice(false);
   };
@@ -438,7 +598,9 @@ export default function PipelineInspectorPage() {
                 </span>
                 <span className="font-mono text-xs font-bold text-[#0ea86b]">
                   {isRunning
-                    ? `Executing... (${elapsedMs} ms)`
+                    ? `Executing Stage ${activeStageIdx + 1}/6... (${elapsedMs} ms)`
+                    : isVoiceLoading
+                    ? "Synthesizing Bangla Voice (Stage 6/6)..."
                     : analysis
                     ? `Completed in ${analysis.inferenceTimeMs} ms`
                     : "Waiting for Uploaded Image"}
@@ -447,12 +609,22 @@ export default function PipelineInspectorPage() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                 {PIPELINE_STAGE_STEPS.map((st, idx) => {
-                  const stageTiming =
+                  const isVoiceStage = idx === 5;
+                  const liveStatus = liveStageStatuses[idx];
+                  const inspectorTiming =
                     analysis?.transparencyInspector?.stages[idx]?.durationMs;
-                  const isDone =
-                    (Boolean(analysis) && !isRunning) ||
-                    (isRunning && idx < activeStageIdx);
-                  const isCurrent = isRunning && idx === activeStageIdx;
+                  const stageTiming =
+                    liveStageTimings[idx] !== null
+                      ? liveStageTimings[idx]
+                      : inspectorTiming;
+
+                  const isCurrent = isRunning
+                    ? liveStatus === "running"
+                    : isVoiceStage && Boolean(analysis) && isVoiceLoading;
+
+                  const isDone = isRunning
+                    ? liveStatus === "done"
+                    : Boolean(analysis) && !(isVoiceStage && isVoiceLoading);
 
                   return (
                     <div
@@ -482,11 +654,13 @@ export default function PipelineInspectorPage() {
                             {st.titleBn}
                           </span>
                         </div>
-                        {stageTiming !== undefined && !isRunning && (
-                          <span className="font-mono text-[11px] font-extrabold text-[#0ea86b] bg-white px-2 py-0.5 rounded-md border border-teal-100 shrink-0">
-                            {stageTiming} ms
-                          </span>
-                        )}
+                        {isDone &&
+                          stageTiming !== undefined &&
+                          stageTiming !== null && (
+                            <span className="font-mono text-[11px] font-extrabold text-[#0ea86b] bg-white px-2 py-0.5 rounded-md border border-teal-100 shrink-0">
+                              {stageTiming} ms
+                            </span>
+                          )}
                       </div>
                       <p className="text-[11px] text-[#46737a] mt-1 pl-7 leading-snug">
                         {st.desc}
@@ -513,10 +687,14 @@ export default function PipelineInspectorPage() {
                       <Loader2 className="size-3 animate-spin text-amber-600" />
                       ভয়েস অডিও তৈরি হচ্ছে...
                     </span>
-                  ) : (
+                  ) : isVoiceReady ? (
                     <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 text-[#0ea86b] border border-emerald-200 px-2.5 py-0.5 text-[10px] font-extrabold">
                       <Check className="size-3 stroke-[3]" />
                       ভয়েস প্রস্তুত
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-teal-50 text-[#46737a] border border-teal-200 px-2.5 py-0.5 text-[10px] font-extrabold">
+                      ব্রাউজার ভয়েস
                     </span>
                   )}
                 </div>
@@ -629,11 +807,15 @@ export default function PipelineInspectorPage() {
       {activeMedicine && (
         <div
           onClick={() => setActiveMedicine(null)}
+          data-lenis-prevent="true"
           className="fixed inset-0 z-50 bg-[#09353c]/55 backdrop-blur-xs flex items-center justify-center p-4"
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="relative w-full max-w-2xl max-h-[86vh] overflow-y-auto rounded-[2.25rem] bg-white p-6 sm:p-8 shadow-2xl border border-teal-100 space-y-6"
+            onWheel={(e) => e.stopPropagation()}
+            onTouchMove={(e) => e.stopPropagation()}
+            data-lenis-prevent="true"
+            className="relative w-full max-w-2xl max-h-[86vh] overflow-y-auto overscroll-contain rounded-[2.25rem] bg-white p-6 sm:p-8 shadow-2xl border border-teal-100 space-y-6"
           >
             <div className="flex items-start justify-between gap-4 border-b border-teal-100 pb-5">
               <div className="space-y-1.5">

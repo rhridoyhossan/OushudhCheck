@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
@@ -422,9 +423,9 @@ class OCREngine:
                         )
                     )
 
-        logger.info(
-            "[DEV-OCR] Extracted %d OCR lines: %s",
-            len(lines),
+        logger.info("[DEV-OCR] Extracted %d OCR line(s)", len(lines))
+        logger.debug(
+            "[DEV-OCR] OCR lines detail: %s",
             [(ln.text, ln.confidence) for ln in lines],
         )
         return lines
@@ -463,7 +464,7 @@ class MedicineMatcher:
             logger.warning("[DEV-DB] Database not found at %s", self.db_path)
             return
 
-        with sqlite3.connect(f"{self.db_path.as_uri()}?mode=ro", uri=True) as conn:
+        with closing(sqlite3.connect(f"{self.db_path.as_uri()}?mode=ro", uri=True)) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
             rows = cur.execute(
@@ -564,7 +565,7 @@ class MedicineMatcher:
             return self._edcl_virtual_records[brand_id]
         if not self.db_path.exists():
             return None
-        with sqlite3.connect(f"{self.db_path.as_uri()}?mode=ro", uri=True) as conn:
+        with closing(sqlite3.connect(f"{self.db_path.as_uri()}?mode=ro", uri=True)) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT * FROM medicines WHERE brand_id = ?",
@@ -572,7 +573,6 @@ class MedicineMatcher:
             ).fetchone()
             if not row:
                 return None
-            keys = row.keys()
             return MedicineInfo(
                 brand_id=int(row["brand_id"]),
                 brand_name=row["brand_name"],
@@ -743,11 +743,11 @@ class MedicineMatcher:
         matched_medicine: Optional[MedicineInfo] = None
         alternatives: List[MedicineInfo] = []
 
-        brand_hint = self._brands_by_lower[best_brand_lower][0].brand_name if best_brand_lower else None
+        entries = self._brands_by_lower.get(best_brand_lower) if best_brand_lower else None
+        brand_hint = entries[0].brand_name if entries else None
         primary_strength, all_strengths = extract_strengths(raw_text, brand_name=brand_hint)
 
-        if best_brand_lower is not None:
-            entries = self._brands_by_lower[best_brand_lower]
+        if best_brand_lower is not None and entries:
             chosen = self._pick_best_variant(entries, dosage_form, primary_strength)
             matched_medicine = self.get_full_medicine_info(chosen.brand_id)
             for alt in entries:
@@ -768,7 +768,7 @@ class MedicineMatcher:
                 )
                 if hit:
                     matched_gen_lower, score, _ = hit
-                    with sqlite3.connect(f"{self.db_path.as_uri()}?mode=ro", uri=True) as conn:
+                    with closing(sqlite3.connect(f"{self.db_path.as_uri()}?mode=ro", uri=True)) as conn:
                         row = conn.execute(
                             "SELECT brand_id FROM medicines WHERE generic_lower = ? LIMIT 1",
                             (matched_gen_lower,),
@@ -819,26 +819,58 @@ class MedicineMatcher:
         if not q or not self.db_path.exists():
             return []
 
+        escaped_q = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        contains_pat = f"%{escaped_q}%"
+        prefix_pat = f"{escaped_q}%"
+
         results: List[MedicineInfo] = []
         seen_ids = set()
 
-        with sqlite3.connect(f"{self.db_path.as_uri()}?mode=ro", uri=True) as conn:
+        with closing(sqlite3.connect(f"{self.db_path.as_uri()}?mode=ro", uri=True)) as conn:
+            conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
-                SELECT brand_id FROM brands
-                WHERE brand_lower LIKE ? OR generic_lower LIKE ?
-                ORDER BY CASE WHEN brand_lower = ? THEN 0 WHEN brand_lower LIKE ? THEN 1 ELSE 2 END, brand_name ASC
+                SELECT * FROM medicines
+                WHERE brand_lower LIKE ? ESCAPE '\\' OR generic_lower LIKE ? ESCAPE '\\'
+                ORDER BY CASE WHEN brand_lower = ? THEN 0 WHEN brand_lower LIKE ? ESCAPE '\\' THEN 1 ELSE 2 END, brand_name ASC
                 LIMIT ?
                 """,
-                (f"%{q}%", f"%{q}%", q, f"{q}%", limit),
+                (contains_pat, contains_pat, q, prefix_pat, limit),
             ).fetchall()
-            for (bid,) in rows:
-                bid_int = int(bid)
-                if bid_int not in seen_ids:
-                    seen_ids.add(bid_int)
-                    info = self.get_full_medicine_info(bid_int)
-                    if info:
-                        results.append(info)
+            for row in rows:
+                bid_int = int(row["brand_id"])
+                if bid_int in seen_ids:
+                    continue
+                seen_ids.add(bid_int)
+                results.append(
+                    MedicineInfo(
+                        brand_id=bid_int,
+                        brand_name=row["brand_name"],
+                        generic=row["generic"],
+                        dosage_form=row["dosage_form"],
+                        manufacturer=row["manufacturer"],
+                        package_container=row["package_container"],
+                        drug_class=row["drug_class"],
+                        indication=row["indication"],
+                        indication_description=row["indication_description"],
+                        dosage_description=row["dosage_description"],
+                        interaction_description=row["interaction_description"],
+                        contraindications_description=row["contraindications_description"],
+                        side_effects_description=row["side_effects_description"],
+                        pregnancy_and_lactation_description=row["pregnancy_and_lactation_description"],
+                        precautions_description=row["precautions_description"],
+                        storage_conditions_description=row["storage_conditions_description"],
+                        beginner_summary=generate_bangla_beginner_summary(
+                            brand_name=row["brand_name"],
+                            generic=row["generic"],
+                            dosage_form=row["dosage_form"],
+                            manufacturer=row["manufacturer"],
+                            drug_class=row["drug_class"],
+                            indication=row["indication"],
+                            strength=row["package_container"],
+                        ),
+                    )
+                )
 
         return results
 
@@ -901,20 +933,23 @@ def evaluate_multi_strip_safety(strips: Sequence[StripScanResult]) -> Tuple[List
 
             ings1 = _split_active_ingredients(m1.generic)
             ings2 = _split_active_ingredients(m2.generic)
+            shared_ings = set(ings1) & set(ings2)
+            uniq_ings1 = [ing for ing in ings1 if ing not in shared_ings]
+            uniq_ings2 = [ing for ing in ings2 if ing not in shared_ings]
 
-            if set(ings1) & set(ings2):
+            if not uniq_ings1 and not uniq_ings2:
                 continue
 
             inter1 = (m1.interaction_description or "").lower()
             inter2 = (m2.interaction_description or "").lower()
 
             interacting_ing: Optional[str] = None
-            for ing in ings2:
+            for ing in uniq_ings2:
                 if len(ing) >= 4 and re.search(rf"\b{re.escape(ing)}\b", inter1):
                     interacting_ing = ing.title()
                     break
             if not interacting_ing:
-                for ing in ings1:
+                for ing in uniq_ings1:
                     if len(ing) >= 4 and re.search(rf"\b{re.escape(ing)}\b", inter2):
                         interacting_ing = ing.title()
                         break
@@ -1109,7 +1144,39 @@ class MedicineStripScanner:
                 if any(m == "exact_brand" and ln.confidence >= 0.80 for ln, _, m in items)
             }
             if exact_brands:
-                brand_anchors = {b_low: brand_anchors[b_low] for b_low in exact_brands}
+                # Only drop fuzzy anchors that spatially overlap an exact brand anchor (noise on the same strip),
+                # preserving distinct fuzzy-matched strips elsewhere in the image.
+                exact_boxes = [
+                    ln.bbox
+                    for b_low in exact_brands
+                    for ln, _, _ in brand_anchors[b_low]
+                    if ln.bbox is not None
+                ]
+                kept_anchors: Dict[str, List[Tuple[OCRLine, float, str]]] = {}
+                for b_low, items in brand_anchors.items():
+                    if b_low in exact_brands:
+                        kept_anchors[b_low] = items
+                        continue
+                    overlaps_exact = False
+                    for ln, _, _ in items:
+                        if ln.bbox is None:
+                            continue
+                        for eb in exact_boxes:
+                            ix1 = max(ln.bbox.x1, eb.x1)
+                            iy1 = max(ln.bbox.y1, eb.y1)
+                            ix2 = min(ln.bbox.x2, eb.x2)
+                            iy2 = min(ln.bbox.y2, eb.y2)
+                            if ix2 > ix1 and iy2 > iy1:
+                                inter = (ix2 - ix1) * (iy2 - iy1)
+                                area = max(1, (ln.bbox.x2 - ln.bbox.x1) * (ln.bbox.y2 - ln.bbox.y1))
+                                if inter / area >= 0.3:
+                                    overlaps_exact = True
+                                    break
+                        if overlaps_exact:
+                            break
+                    if not overlaps_exact:
+                        kept_anchors[b_low] = items
+                brand_anchors = kept_anchors
 
         if not brand_anchors:
             xs = [ln.bbox.x1 for ln in ocr_lines if ln.bbox] + [ln.bbox.x2 for ln in ocr_lines if ln.bbox]
@@ -1216,13 +1283,27 @@ class MedicineStripScanner:
         return clusters_out
 
     def scan_image(self, image: np.ndarray) -> MultiStripScanResponse:
+        resp, _ = self.scan_image_with_timings(image)
+        return resp
+
+    def scan_image_with_timings(self, image: np.ndarray) -> Tuple[MultiStripScanResponse, Dict[str, int]]:
+        zero_timings = {
+            "objectDetectionMs": 0,
+            "preprocessingMs": 0,
+            "ocrEngineMs": 0,
+            "fuzzyMatchMs": 0,
+            "reasoningMs": 0,
+        }
         if image is None or image.size == 0:
-            return MultiStripScanResponse(
-                total_strips_detected=0,
-                strips=[],
-                safety_alerts=[],
-                summary_en="Invalid or empty image.",
-                summary_bn="ছবিটি পড়া যায়নি।",
+            return (
+                MultiStripScanResponse(
+                    total_strips_detected=0,
+                    strips=[],
+                    safety_alerts=[],
+                    summary_en="Invalid or empty image.",
+                    summary_bn="ছবিটি পড়া যায়নি।",
+                ),
+                zero_timings,
             )
 
         import time as _time
@@ -1235,17 +1316,19 @@ class MedicineStripScanner:
         _ = self.detector.detect_strips(image)
         yolo_ms = max(4, int((_time.perf_counter() - t_yolo) * 1000))
 
-        # Stage 2: CLAHE Foil Image Preprocessing
-        t_prep = _time.perf_counter()
-        enhanced_full = self.detector.preprocess_for_ocr(image)
-        prep_ms = max(4, int((_time.perf_counter() - t_prep) * 1000))
-
-        # Stage 3: PaddleOCR (PP-OCRv6 ONNX via RapidOCR) across 0° + 90° CCW orientations
+        # Stage 2 & 3: PaddleOCR (PP-OCRv6 ONNX via RapidOCR) across 0° + 90° CCW orientations,
+        # running full-image LAB-CLAHE preprocessing lazily only if raw-image OCR yields no lines.
         t_ocr = _time.perf_counter()
         ocr_lines = self.ocr_engine.extract_lines(image, include_rotated=True)
-        if not ocr_lines:
-            ocr_lines = self.ocr_engine.extract_lines(enhanced_full, include_rotated=True)
         ocr_ms = max(12, int((_time.perf_counter() - t_ocr) * 1000))
+        prep_ms = 0
+        if not ocr_lines:
+            t_prep = _time.perf_counter()
+            enhanced_full = self.detector.preprocess_for_ocr(image)
+            prep_ms = max(4, int((_time.perf_counter() - t_prep) * 1000))
+            t_ocr2 = _time.perf_counter()
+            ocr_lines = self.ocr_engine.extract_lines(enhanced_full, include_rotated=True)
+            ocr_ms += max(12, int((_time.perf_counter() - t_ocr2) * 1000))
 
         # Stage 4: RapidFuzz + SQLite 17K+ BD Database Matching & Spatial Clustering
         t_fuzz = _time.perf_counter()
@@ -1272,25 +1355,29 @@ class MedicineStripScanner:
         alerts, summary_en, summary_bn = evaluate_multi_strip_safety(strip_results)
         slm_ms = max(3, int((_time.perf_counter() - t_slm) * 1000))
 
-        self.last_stage_timings_ms = {
+        stage_timings = {
             "objectDetectionMs": yolo_ms,
             "preprocessingMs": prep_ms,
             "ocrEngineMs": ocr_ms,
             "fuzzyMatchMs": fuzz_ms,
             "reasoningMs": slm_ms,
         }
+        self.last_stage_timings_ms = stage_timings
         logger.info(
             "[DEV-SCAN] Completed scan: %d strip(s) detected, %d safety alert(s) | Stages(ms)=%s",
             len(strip_results),
             len(alerts),
-            self.last_stage_timings_ms,
+            stage_timings,
         )
-        return MultiStripScanResponse(
-            total_strips_detected=len(strip_results),
-            strips=strip_results,
-            safety_alerts=alerts,
-            summary_en=summary_en,
-            summary_bn=summary_bn,
+        return (
+            MultiStripScanResponse(
+                total_strips_detected=len(strip_results),
+                strips=strip_results,
+                safety_alerts=alerts,
+                summary_en=summary_en,
+                summary_bn=summary_bn,
+            ),
+            stage_timings,
         )
 
     def scan_texts(self, strip_texts: Sequence[str]) -> MultiStripScanResponse:

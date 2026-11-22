@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 import logging
-import struct
+import tempfile
 import time
 import numpy as np
 
@@ -23,16 +23,16 @@ except ImportError:
 logger = logging.getLogger("oushudhcheck.yolo")
 
 
-def _ensure_yolo_onnx_artifact(model_path: Path) -> None:
+def _ensure_yolo_onnx_artifact(model_path: Path) -> Path:
     """
     Ensures a valid ONNX strip-proposal graph (`yolo_strips.onnx`) exists at `model_path`
     so `onnxruntime.InferenceSession` can execute local edge ONNX strip detection out-of-the-box,
     while allowing drop-in replacement with custom-trained YOLO26n/s `.onnx` weights.
+    Falls back to the system temp directory if `model_path` is on a read-only mount.
     """
     if model_path.exists() and model_path.stat().st_size > 64:
-        return
+        return model_path
 
-    model_path.parent.mkdir(parents=True, exist_ok=True)
     # Build a minimal valid ONNX protobuf model (IR v8, opset 13: Identity graph `images -> output0`)
     # so onnxruntime loads and runs a real ONNX session on CPU even before external weights are copied.
     def _varint(val: int) -> bytes:
@@ -81,7 +81,20 @@ def _ensure_yolo_onnx_artifact(model_path: Path) -> None:
         + _field_bytes(7, graph)
         + _field_bytes(8, opset)
     )
-    model_path.write_bytes(model)
+    try:
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        model_path.write_bytes(model)
+        return model_path
+    except OSError as exc:
+        fallback_path = Path(tempfile.gettempdir()) / model_path.name
+        logger.warning(
+            "[DEV-YOLO] Cannot write ONNX artifact to %s (%s); using %s",
+            model_path,
+            exc,
+            fallback_path,
+        )
+        fallback_path.write_bytes(model)
+        return fallback_path
 
 
 @dataclass
@@ -106,7 +119,7 @@ class StripDetector:
         self._load_model()
 
     def _load_model(self) -> None:
-        _ensure_yolo_onnx_artifact(self.model_path)
+        self.model_path = _ensure_yolo_onnx_artifact(self.model_path)
 
         if not self.model_path or not self.model_path.exists():
             return

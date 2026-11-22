@@ -1,6 +1,7 @@
 "use client";
 
-import React from "react";
+import React, { useRef } from "react";
+import { useParallaxZoom } from "@/components/scroll-reveal";
 import {
   ThumbsUp,
   Zap,
@@ -18,8 +19,15 @@ import {
 } from "lucide-react";
 
 export function ServicesGrid() {
+  const sectionRef = useRef<HTMLElement | null>(null);
+  useParallaxZoom(sectionRef, "[data-reveal='scale']");
+
   return (
-    <section id="services" className="relative max-w-5xl mx-auto px-4 sm:px-6 py-12">
+    <section
+      ref={sectionRef}
+      id="services"
+      className="relative max-w-5xl mx-auto px-4 sm:px-6 py-12"
+    >
       {/* Frosted Glass Container with Perspective Grid & Ambient Glows (same as About section) */}
       <div className="relative rounded-[2.5rem] bg-white/60 backdrop-blur-2xl border border-white/90 px-5 py-12 sm:px-10 shadow-[0_24px_70px_rgba(11,85,99,0.09)] overflow-hidden">
         {/* Background Perspective Grid Lines in Teal */}
@@ -58,7 +66,7 @@ export function ServicesGrid() {
              =============================================================== */}
           <div className="flex flex-col gap-5">
             {/* CARD 1: 1. AI Medicine Detection */}
-            <div className="group flex-1 rounded-[1.75rem] bg-white/95 backdrop-blur-xl p-6 border border-teal-200/80 hover:border-[#0ea86b] shadow-[0_14px_40px_rgba(11,85,99,0.08)] hover:shadow-[0_20px_50px_rgba(14,168,107,0.18)] hover:-translate-y-0.5 transition-all duration-300 flex flex-col justify-between">
+            <div data-reveal="scale" className="group flex-1 rounded-[1.75rem] bg-white/95 backdrop-blur-xl p-6 border border-teal-200/80 hover:border-[#0ea86b] shadow-[0_14px_40px_rgba(11,85,99,0.08)] hover:shadow-[0_20px_50px_rgba(14,168,107,0.18)] hover:-translate-y-0.5 transition-all duration-300 flex flex-col justify-between">
               <div className="space-y-4">
                 {/* Top Floating Metric Pill */}
                 <div className="relative rounded-2xl bg-white p-4 shadow-[0_8px_28px_rgba(11,85,99,0.07)] border border-teal-50 flex items-center justify-between">
@@ -141,7 +149,7 @@ export function ServicesGrid() {
             </div>
 
             {/* CARD 3: 3. Duplicate Medicine Detection */}
-            <div className="group rounded-[1.75rem] bg-white/95 backdrop-blur-xl p-6 border border-teal-200/80 hover:border-[#0ea86b] shadow-[0_14px_40px_rgba(11,85,99,0.08)] hover:shadow-[0_20px_50px_rgba(14,168,107,0.18)] hover:-translate-y-0.5 transition-all duration-300 flex flex-col justify-between">
+            <div data-reveal="scale" className="group rounded-[1.75rem] bg-white/95 backdrop-blur-xl p-6 border border-teal-200/80 hover:border-[#0ea86b] shadow-[0_14px_40px_rgba(11,85,99,0.08)] hover:shadow-[0_20px_50px_rgba(14,168,107,0.18)] hover:-translate-y-0.5 transition-all duration-300 flex flex-col justify-between">
               <div className="space-y-2.5 overflow-hidden py-1">
                 <div className="flex items-center gap-2.5">
                   <div className="flex-1 rounded-2xl bg-white p-3 shadow-[0_6px_20px_rgba(11,85,99,0.06)] border border-teal-50 flex items-center gap-2.5">
@@ -210,7 +218,7 @@ export function ServicesGrid() {
              =============================================================== */}
           <div className="flex flex-col gap-5">
             {/* CARD 2: 2. Medicine Identification & Generic Matching */}
-            <div className="group rounded-[1.75rem] bg-white/95 backdrop-blur-xl p-6 border border-teal-200/80 hover:border-[#0ea86b] shadow-[0_14px_40px_rgba(11,85,99,0.08)] hover:shadow-[0_20px_50px_rgba(14,168,107,0.18)] hover:-translate-y-0.5 transition-all duration-300 flex flex-col justify-between">
+            <div data-reveal="scale" className="group rounded-[1.75rem] bg-white/95 backdrop-blur-xl p-6 border border-teal-200/80 hover:border-[#0ea86b] shadow-[0_14px_40px_rgba(11,85,99,0.08)] hover:shadow-[0_20px_50px_rgba(14,168,107,0.18)] hover:-translate-y-0.5 transition-all duration-300 flex flex-col justify-between">
               <div className="rounded-2xl bg-[#f2f9f8] p-4 border border-teal-100/80 space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-[11px] font-semibold text-[#46737a]">
@@ -273,7 +281,7 @@ export function ServicesGrid() {
             </div>
 
             {/* CARD 4: 4. Drug Interaction Screening */}
-            <div className="group flex-1 rounded-[1.75rem] bg-white/95 backdrop-blur-xl p-6 border border-teal-200/80 hover:border-[#0ea86b] shadow-[0_14px_40px_rgba(11,85,99,0.08)] hover:shadow-[0_20px_50px_rgba(14,168,107,0.18)] hover:-translate-y-0.5 transition-all duration-300 flex flex-col justify-between">
+            <div data-reveal="scale" className="group flex-1 rounded-[1.75rem] bg-white/95 backdrop-blur-xl p-6 border border-teal-200/80 hover:border-[#0ea86b] shadow-[0_14px_40px_rgba(11,85,99,0.08)] hover:shadow-[0_20px_50px_rgba(14,168,107,0.18)] hover:-translate-y-0.5 transition-all duration-300 flex flex-col justify-between">
               <div className="space-y-3.5">
                 {/* Rating Point Barcode Tick Bar + Smooth Emerald Wave Widget */}
                 <div className="rounded-2xl bg-white p-4 shadow-[0_8px_25px_rgba(11,85,99,0.06)] border border-teal-50 space-y-3">
@@ -392,7 +400,7 @@ export function ServicesGrid() {
              =============================================================== */}
           <div className="flex flex-col gap-5">
             {/* CARD 6: 6. Bangla AI Voice Assistant */}
-            <div className="group flex-1 rounded-[1.75rem] bg-white/95 backdrop-blur-xl p-6 border border-teal-200/80 hover:border-[#0ea86b] shadow-[0_14px_40px_rgba(11,85,99,0.08)] hover:shadow-[0_20px_50px_rgba(14,168,107,0.18)] hover:-translate-y-0.5 transition-all duration-300 flex flex-col justify-between">
+            <div data-reveal="scale" className="group flex-1 rounded-[1.75rem] bg-white/95 backdrop-blur-xl p-6 border border-teal-200/80 hover:border-[#0ea86b] shadow-[0_14px_40px_rgba(11,85,99,0.08)] hover:shadow-[0_20px_50px_rgba(14,168,107,0.18)] hover:-translate-y-0.5 transition-all duration-300 flex flex-col justify-between">
               <div className="space-y-4">
                 {/* Top 3 Mini Stat Squares */}
                 <div className="grid grid-cols-3 gap-2.5">
@@ -489,7 +497,7 @@ export function ServicesGrid() {
             </div>
 
             {/* CARD 7: 7. Telegram Medicine Assistant */}
-            <div className="group rounded-[1.75rem] bg-white/95 backdrop-blur-xl p-6 border border-teal-200/80 hover:border-[#0ea86b] shadow-[0_14px_40px_rgba(11,85,99,0.08)] hover:shadow-[0_20px_50px_rgba(14,168,107,0.18)] hover:-translate-y-0.5 transition-all duration-300 flex flex-col justify-between">
+            <div data-reveal="scale" className="group rounded-[1.75rem] bg-white/95 backdrop-blur-xl p-6 border border-teal-200/80 hover:border-[#0ea86b] shadow-[0_14px_40px_rgba(11,85,99,0.08)] hover:shadow-[0_20px_50px_rgba(14,168,107,0.18)] hover:-translate-y-0.5 transition-all duration-300 flex flex-col justify-between">
               <div className="relative h-32 flex items-center justify-center">
                 <div className="size-24 rounded-full border border-dashed border-teal-200 flex items-center justify-center">
                   <div className="relative size-14 rounded-full bg-white shadow-[0_8px_25px_rgba(14,168,107,0.22)] border border-emerald-100 flex items-center justify-center text-[#0ea86b]">
@@ -550,7 +558,7 @@ export function ServicesGrid() {
         {/* ===============================================================
             CARD 5 (Full-Width Bento Feature Card with Same Glow Effect): 5. Smart Dosage & Medicine Guidance
            =============================================================== */}
-        <div className="group relative z-10 mt-5 rounded-[1.75rem] bg-white/95 backdrop-blur-xl p-6 sm:p-8 border border-teal-200/80 hover:border-[#0ea86b] shadow-[0_14px_40px_rgba(11,85,99,0.08)] hover:shadow-[0_20px_50px_rgba(14,168,107,0.18)] hover:-translate-y-0.5 transition-all duration-300">
+        <div data-reveal="scale" className="group relative z-10 mt-5 rounded-[1.75rem] bg-white/95 backdrop-blur-xl p-6 sm:p-8 border border-teal-200/80 hover:border-[#0ea86b] shadow-[0_14px_40px_rgba(11,85,99,0.08)] hover:shadow-[0_20px_50px_rgba(14,168,107,0.18)] hover:-translate-y-0.5 transition-all duration-300">
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
             {/* Left 7 Cols: Feature #5 Text & Bullet Points */}
             <div className="lg:col-span-7 space-y-2.5">

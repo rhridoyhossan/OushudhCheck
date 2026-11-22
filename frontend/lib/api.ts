@@ -4,55 +4,165 @@ import { PRESET_SCENARIOS } from "./mock-data";
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
 
-export const BACKEND_ORIGIN = API_BASE_URL.replace(/\/api\/v1\/?$/, "");
+export const BACKEND_ORIGIN = API_BASE_URL.replace(/\/api(?:\/v1)?\/?$/, "");
 
 /**
  * Sends a captured or uploaded medicine strip image to the FastAPI backend
- * (`/api/v1/scan`).
+ * (`/api/v1/scan`). Throws a descriptive error if the scan fails so real user
+ * photos are never silently replaced with unrelated mock medicines.
  */
 export async function analyzeMedicineImage(
-  fileOrBlob: File | Blob,
-  fallbackScenarioId = "live-stage-demo"
+  fileOrBlob: File | Blob
 ): Promise<{ data: ScanAnalysisResult; isLiveBackend: boolean }> {
+  const formData = new FormData();
+  const fileName =
+    fileOrBlob instanceof File && fileOrBlob.name
+      ? fileOrBlob.name
+      : "tabletop_strips.jpg";
+  formData.append("file", fileOrBlob, fileName);
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 45000);
+
   try {
-    const formData = new FormData();
-    const fileName =
-      fileOrBlob instanceof File && fileOrBlob.name
-        ? fileOrBlob.name
-        : "tabletop_strips.jpg";
-    formData.append("file", fileOrBlob, fileName);
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
-
     const response = await fetch(`${API_BASE_URL}/scan`, {
       method: "POST",
       body: formData,
       signal: controller.signal,
     });
 
-    clearTimeout(timeout);
-
-    if (response.ok) {
-      const json = await response.json();
-      return { data: json as ScanAnalysisResult, isLiveBackend: true };
+    if (!response.ok) {
+      let detail = `Scan failed with HTTP ${response.status}`;
+      try {
+        const errBody = await response.json();
+        if (errBody?.detail) detail = String(errBody.detail);
+      } catch {
+        // ignore JSON parse failure
+      }
+      throw new Error(detail);
     }
-  } catch {
-    // Backend not running locally; fallback to deterministic demo simulation
+
+    const json = await response.json();
+    return { data: json as ScanAnalysisResult, isLiveBackend: true };
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error("Scan timed out. Please ensure the FastAPI backend is running and try again.");
+    }
+    throw err instanceof Error
+      ? err
+      : new Error("Unable to reach the OushudhCheck backend server.");
+  } finally {
+    clearTimeout(timeout);
   }
+}
 
-  await new Promise((resolve) => setTimeout(resolve, 850));
-  const preset =
-    PRESET_SCENARIOS.find((s) => s.id === fallbackScenarioId) ||
-    PRESET_SCENARIOS[0];
+export interface ScanStageProgressEvent {
+  stageIndex: number;
+  status: "running" | "done";
+  durationMs?: number;
+}
 
-  return {
-    data: {
-      ...preset.result,
-      timestamp: `Scanned at ${new Date().toLocaleTimeString()} • Edge ONNX Runtime`,
-    },
-    isLiveBackend: false,
-  };
+/**
+ * Streams real-time per-stage progress events from FastAPI (`POST /api/v1/scan-stream`)
+ * as each AI stage actually starts and completes, then resolves with the final ScanAnalysisResult.
+ * Falls back to `POST /api/v1/scan` if streaming is unavailable.
+ */
+export async function analyzeMedicineImageStream(
+  fileOrBlob: File | Blob,
+  onProgress?: (event: ScanStageProgressEvent) => void
+): Promise<{ data: ScanAnalysisResult; isLiveBackend: boolean }> {
+  const formData = new FormData();
+  const fileName =
+    fileOrBlob instanceof File && fileOrBlob.name
+      ? fileOrBlob.name
+      : "tabletop_strips.jpg";
+  formData.append("file", fileOrBlob, fileName);
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60000);
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/scan-stream`, {
+      method: "POST",
+      body: formData,
+      signal: controller.signal,
+    });
+
+    if (response.status === 404 || response.status === 405) {
+      clearTimeout(timeout);
+      return analyzeMedicineImage(fileOrBlob);
+    }
+
+    if (!response.ok) {
+      let detail = `Scan failed with HTTP ${response.status}`;
+      try {
+        const errBody = await response.json();
+        if (errBody?.detail) detail = String(errBody.detail);
+      } catch {
+        // ignore JSON parse failure
+      }
+      throw new Error(detail);
+    }
+
+    if (!response.body) {
+      clearTimeout(timeout);
+      return analyzeMedicineImage(fileOrBlob);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let finalResult: ScanAnalysisResult | null = null;
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line) continue;
+        const msg = JSON.parse(line);
+        if (msg.type === "stage" && onProgress) {
+          onProgress({
+            stageIndex: Number(msg.stageIndex),
+            status: msg.status === "done" ? "done" : "running",
+            durationMs:
+              typeof msg.durationMs === "number" ? msg.durationMs : undefined,
+          });
+        } else if (msg.type === "result" && msg.data) {
+          finalResult = msg.data as ScanAnalysisResult;
+        }
+      }
+    }
+
+    if (buffer.trim()) {
+      const msg = JSON.parse(buffer.trim());
+      if (msg.type === "result" && msg.data) {
+        finalResult = msg.data as ScanAnalysisResult;
+      }
+    }
+
+    if (!finalResult) {
+      throw new Error("Scan stream ended without returning results.");
+    }
+
+    return { data: finalResult, isLiveBackend: true };
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error(
+        "Scan timed out. Please ensure the FastAPI backend is running and try again."
+      );
+    }
+    throw err instanceof Error
+      ? err
+      : new Error("Unable to reach the OushudhCheck backend server.");
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 /**

@@ -36,9 +36,8 @@ import {
   ScanAnalysisResult,
 } from "@/lib/types";
 import {
-  analyzeMedicineImage,
+  analyzeMedicineImageStream,
   BACKEND_ORIGIN,
-  runLiveBenchmarkScan,
 } from "@/lib/api";
 import { toast } from "sonner";
 
@@ -128,13 +127,20 @@ export function MedicineScannerWorkspace() {
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [scanStageIdx, setScanStageIdx] = useState(0);
+  const [scanStageStatuses, setScanStageStatuses] = useState<
+    Array<"pending" | "running" | "done">
+  >(["pending", "pending", "pending", "pending", "pending"]);
+  const [scanStageDurations, setScanStageDurations] = useState<
+    Array<number | null>
+  >([null, null, null, null, null]);
   const [scanElapsedMs, setScanElapsedMs] = useState(0);
   const [analysis, setAnalysis] = useState<ScanAnalysisResult>(
     PRESET_SCENARIOS[0].result
   );
 
   // Dedicated Bangla Audio Player state (length, current time, % done, playing, loading)
-  const [isVoiceLoading, setIsVoiceLoading] = useState(false);
+  const [voiceLoadedForKey, setVoiceLoadedForKey] = useState<string | null>(null);
+  const [voiceFailedForKey, setVoiceFailedForKey] = useState<string | null>(null);
   const [readyAudioBlobUrl, setReadyAudioBlobUrl] = useState<string | null>(
     null
   );
@@ -148,21 +154,70 @@ export function MedicineScannerWorkspace() {
 
   const webcamRef = useRef<Webcam>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const imagePreviewRef = useRef<string | null>(null);
+
+  const hasUploadedImage = Boolean(selectedFile || imagePreview);
+  const activeVoiceKey =
+    step === "summary" && analysis?.audioUrl
+      ? `${analysis.scanId}:${analysis.audioUrl}`
+      : null;
+  const isVoiceLoading = Boolean(
+    activeVoiceKey &&
+      voiceLoadedForKey !== activeVoiceKey &&
+      voiceFailedForKey !== activeVoiceKey
+  );
+  const isVoiceReady = Boolean(
+    activeVoiceKey && voiceLoadedForKey === activeVoiceKey && readyAudioBlobUrl
+  );
+
+  // Lock background page scroll and allow Escape key to close clinical modal cleanly
+  useEffect(() => {
+    if (!activeMedicine) return;
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setActiveMedicine(null);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = originalOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [activeMedicine]);
+
+  // Cleanup preview blob URL & audio on unmount
+  useEffect(() => {
+    imagePreviewRef.current = imagePreview;
+  }, [imagePreview]);
+
+  useEffect(() => {
+    return () => {
+      if (imagePreviewRef.current?.startsWith("blob:")) {
+        URL.revokeObjectURL(imagePreviewRef.current);
+      }
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
 
   // Background voice pre-fetcher: as soon as scan results appear on screen, prepare the Bangla MP3
   // asynchronously while showing a live animated voice loader until ready.
   useEffect(() => {
-    if (step !== "summary" || !analysis?.audioUrl) {
-      setIsVoiceLoading(false);
+    if (!activeVoiceKey || !analysis?.audioUrl) {
       return;
     }
 
     let cancelled = false;
-    setIsVoiceLoading(true);
-    setReadyAudioBlobUrl(null);
-    setAudioDuration(0);
-    setAudioCurrentTime(0);
-    setIsPlayingVoice(false);
+    let createdObjUrl: string | null = null;
+    const controller = new AbortController();
 
     if (audioRef.current) {
       audioRef.current.pause();
@@ -173,13 +228,14 @@ export function MedicineScannerWorkspace() {
       ? analysis.audioUrl
       : `${BACKEND_ORIGIN}${analysis.audioUrl}`;
 
-    fetch(fullAudioUrl)
+    fetch(fullAudioUrl, { signal: controller.signal })
       .then((res) =>
         res.ok ? res.blob() : Promise.reject(new Error("TTS failed"))
       )
       .then((blob) => {
         if (cancelled) return;
         const objUrl = URL.createObjectURL(blob);
+        createdObjUrl = objUrl;
         setReadyAudioBlobUrl(objUrl);
 
         const audio = new Audio(objUrl);
@@ -203,24 +259,35 @@ export function MedicineScannerWorkspace() {
         audio.onerror = () => {
           if (!cancelled) setIsPlayingVoice(false);
         };
-        setIsVoiceLoading(false);
+        setVoiceLoadedForKey(activeVoiceKey);
       })
       .catch(() => {
         if (!cancelled) {
-          setIsVoiceLoading(false);
+          setVoiceFailedForKey(activeVoiceKey);
         }
       });
 
     return () => {
       cancelled = true;
+      controller.abort();
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      if (createdObjUrl) {
+        URL.revokeObjectURL(createdObjUrl);
+      }
     };
-  }, [step, analysis?.scanId, analysis?.audioUrl]);
+  }, [activeVoiceKey, analysis?.audioUrl]);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles.length > 0) {
       const file = acceptedFiles[0];
+      setImagePreview((prev) => {
+        if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev);
+        return URL.createObjectURL(file);
+      });
       setSelectedFile(file);
-      setImagePreview(URL.createObjectURL(file));
     }
   }, []);
 
@@ -236,7 +303,10 @@ export function MedicineScannerWorkspace() {
   const handleWebcamSnap = async () => {
     const shot = webcamRef.current?.getScreenshot();
     if (shot) {
-      setImagePreview(shot);
+      setImagePreview((prev) => {
+        if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev);
+        return shot;
+      });
       const res = await fetch(shot);
       const blob = await res.blob();
       setSelectedFile(
@@ -246,18 +316,22 @@ export function MedicineScannerWorkspace() {
     }
   };
 
-  const handleNextScan = async () => {
+  const handleNextScan = useCallback(async () => {
+    if (!selectedFile && !imagePreview) {
+      toast.error("Please upload or capture a medicine photo first.");
+      return;
+    }
+
     setIsScanning(true);
     setScanStageIdx(0);
+    setScanStageStatuses(["running", "pending", "pending", "pending", "pending"]);
+    setScanStageDurations([null, null, null, null, null]);
     setScanElapsedMs(0);
 
-    const t0 = performance.now();
+    const t0 = Date.now();
     const timer = setInterval(() => {
-      setScanElapsedMs(Math.round(performance.now() - t0));
-      setScanStageIdx((prev) =>
-        Math.min(LIVE_SCAN_STAGES.length - 1, prev + 1)
-      );
-    }, 320);
+      setScanElapsedMs(Math.round(Date.now() - t0));
+    }, 100);
 
     try {
       let fileToAnalyze: File | Blob | null = selectedFile;
@@ -265,38 +339,60 @@ export function MedicineScannerWorkspace() {
         const res = await fetch(imagePreview);
         fileToAnalyze = await res.blob();
       }
-
-      if (fileToAnalyze) {
-        const { data, isLiveBackend } = await analyzeMedicineImage(
-          fileToAnalyze
-        );
-        setAnalysis(data);
-        toast.success(
-          isLiveBackend ? "FastAPI Scan Complete" : "Medicine Scan Complete",
-          {
-            description: `${data.detectedStrips.length} strips analyzed in ${data.inferenceTimeMs}ms`,
-          }
-        );
-      } else {
-        const { data, isLiveBackend } = await runLiveBenchmarkScan(
-          "multi-5-strips"
-        );
-        setAnalysis(data);
-        toast.success(
-          isLiveBackend
-            ? "Live Sample Benchmark Scan Complete"
-            : "Medicine Scan Complete",
-          {
-            description: `${data.detectedStrips.length} strips analyzed in ${data.inferenceTimeMs}ms`,
-          }
-        );
+      if (!fileToAnalyze) {
+        toast.error("Please upload or capture a medicine photo first.");
+        return;
       }
+
+      const { data, isLiveBackend } = await analyzeMedicineImageStream(
+        fileToAnalyze,
+        (ev) => {
+          if (ev.stageIndex < 0 || ev.stageIndex >= LIVE_SCAN_STAGES.length) {
+            return;
+          }
+          setScanStageIdx(ev.stageIndex);
+          setScanStageStatuses((prev) => {
+            const next = [...prev];
+            for (let i = 0; i < ev.stageIndex; i++) {
+              next[i] = "done";
+            }
+            next[ev.stageIndex] = ev.status;
+            return next;
+          });
+          if (ev.status === "done" && typeof ev.durationMs === "number") {
+            setScanStageDurations((prev) => {
+              const next = [...prev];
+              next[ev.stageIndex] = ev.durationMs ?? null;
+              return next;
+            });
+          }
+        }
+      );
+      setScanStageStatuses(["done", "done", "done", "done", "done"]);
+      setAnalysis(data);
+      setReadyAudioBlobUrl(null);
+      setAudioDuration(0);
+      setAudioCurrentTime(0);
+      setIsPlayingVoice(false);
+      toast.success(
+        isLiveBackend ? "FastAPI Scan Complete" : "Medicine Scan Complete",
+        {
+          description: `${data.detectedStrips.length} strips analyzed in ${data.inferenceTimeMs}ms`,
+        }
+      );
       setStep("summary");
+    } catch (err) {
+      toast.error("Medicine Scan Failed", {
+        description:
+          err instanceof Error
+            ? err.message
+            : "Could not analyze the uploaded image. Please try again.",
+      });
     } finally {
       clearInterval(timer);
       setIsScanning(false);
     }
-  };
+  }, [selectedFile, imagePreview]);
 
   const handleOpenStripDatabaseInfo = async (strip: BoundingBox) => {
     if (strip.databaseRecord) {
@@ -375,8 +471,11 @@ export function MedicineScannerWorkspace() {
   };
 
   const handleResetFile = () => {
+    setImagePreview((prev) => {
+      if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev);
+      return null;
+    });
     setSelectedFile(null);
-    setImagePreview(null);
   };
 
   const toggleBanglaVoice = () => {
@@ -430,6 +529,14 @@ export function MedicineScannerWorkspace() {
       : 0;
 
   const activeStage = LIVE_SCAN_STAGES[scanStageIdx] || LIVE_SCAN_STAGES[0];
+  const completedStagesCount = scanStageStatuses.filter(
+    (st) => st === "done"
+  ).length;
+  const hasRunningStage = scanStageStatuses.some((st) => st === "running");
+  const liveScanPct = Math.min(
+    100,
+    completedStagesCount * 20 + (hasRunningStage ? 10 : 0)
+  );
 
   const steps = [
     { id: 1, label: "YOLO26", status: "done" },
@@ -458,18 +565,26 @@ export function MedicineScannerWorkspace() {
             const isDone = s.status === "done";
             const isActive = s.status === "active";
 
+            const isStepDisabled =
+              s.id === 5 && step === "upload" && (!hasUploadedImage || isScanning);
+
             return (
               <button
                 key={s.id}
                 type="button"
+                disabled={isStepDisabled}
                 onClick={() => {
                   if (s.id === 4) handleBackToUpload();
-                  if (s.id === 5 && step === "upload") handleNextScan();
+                  if (s.id === 5 && step === "upload" && hasUploadedImage) {
+                    handleNextScan();
+                  }
                 }}
-                className={`flex-1 flex items-center justify-between rounded-full px-3.5 py-2 text-xs font-semibold transition cursor-pointer ${
-                  isActive
-                    ? "bg-white text-[#09353c] shadow-sm border border-teal-200/70"
-                    : "bg-[#f2f9f8] text-[#46737a] hover:bg-teal-50/70"
+                className={`flex-1 flex items-center justify-between rounded-full px-3.5 py-2 text-xs font-semibold transition ${
+                  isStepDisabled
+                    ? "bg-[#f2f9f8]/60 text-[#46737a]/50 cursor-not-allowed"
+                    : isActive
+                    ? "bg-white text-[#09353c] shadow-sm border border-teal-200/70 cursor-pointer"
+                    : "bg-[#f2f9f8] text-[#46737a] hover:bg-teal-50/70 cursor-pointer"
                 }`}
               >
                 <div className="flex items-center gap-2">
@@ -518,25 +633,27 @@ export function MedicineScannerWorkspace() {
               </div>
             </div>
             <span className="font-mono text-xs font-extrabold text-[#0ea86b] bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200 shrink-0">
-              {activeStage.pct}% • {scanElapsedMs} ms
+              {liveScanPct}% • {scanElapsedMs} ms
             </span>
           </div>
 
           <div className="h-2.5 w-full rounded-full bg-teal-100 overflow-hidden">
             <div
-              style={{ width: `${activeStage.pct}%` }}
+              style={{ width: `${liveScanPct}%` }}
               className="h-full bg-gradient-to-r from-[#0b5563] to-[#0ea86b] transition-all duration-300 rounded-full"
             />
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 pt-1">
             {LIVE_SCAN_STAGES.map((st, idx) => {
-              const done = idx < scanStageIdx;
-              const current = idx === scanStageIdx;
+              const status = scanStageStatuses[idx];
+              const done = status === "done";
+              const current = status === "running";
+              const dur = scanStageDurations[idx];
               return (
                 <div
                   key={st.id}
-                  className={`rounded-xl px-2.5 py-2 text-[11px] font-bold flex items-center gap-1.5 border ${
+                  className={`rounded-xl px-2.5 py-2 text-[11px] font-bold flex items-center justify-between gap-1.5 border ${
                     current
                       ? "bg-emerald-50 text-[#09353c] border-[#0ea86b]"
                       : done
@@ -544,14 +661,21 @@ export function MedicineScannerWorkspace() {
                       : "bg-white text-[#46737a]/60 border-teal-50"
                   }`}
                 >
-                  {done ? (
-                    <Check className="size-3.5 text-[#0ea86b] shrink-0" />
-                  ) : current ? (
-                    <Loader2 className="size-3.5 text-[#0ea86b] animate-spin shrink-0" />
-                  ) : (
-                    <span className="size-3.5 rounded-full bg-teal-100 inline-block shrink-0" />
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    {done ? (
+                      <Check className="size-3.5 text-[#0ea86b] shrink-0" />
+                    ) : current ? (
+                      <Loader2 className="size-3.5 text-[#0ea86b] animate-spin shrink-0" />
+                    ) : (
+                      <span className="size-3.5 rounded-full bg-teal-100 inline-block shrink-0" />
+                    )}
+                    <span className="truncate">ধাপ {st.id}/৫</span>
+                  </div>
+                  {dur !== null && (
+                    <span className="font-mono text-[10px] shrink-0">
+                      {dur}ms
+                    </span>
                   )}
-                  <span className="truncate">ধাপ {st.id}/৫</span>
                 </div>
               );
             })}
@@ -691,20 +815,25 @@ export function MedicineScannerWorkspace() {
 
               <button
                 type="button"
-                disabled={isScanning}
+                disabled={isScanning || !hasUploadedImage}
                 onClick={handleNextScan}
-                className="w-full inline-flex items-center justify-center gap-2 rounded-full bg-[#0ea86b] hover:bg-[#0b5563] text-white text-xs sm:text-sm font-bold py-3.5 shadow-md shadow-[#0ea86b]/25 transition cursor-pointer disabled:opacity-60"
+                title={
+                  !hasUploadedImage
+                    ? "Upload or capture a medicine strip photo first"
+                    : "Scan uploaded photo"
+                }
+                className="w-full inline-flex items-center justify-center gap-2 rounded-full bg-[#0ea86b] hover:bg-[#0b5563] text-white text-xs sm:text-sm font-bold py-3.5 shadow-md shadow-[#0ea86b]/25 transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-[#0ea86b]"
               >
                 {isScanning ? (
                   <>
                     <Loader2 className="size-4 animate-spin" />
-                    <span>Scanning ({activeStage.pct}%)...</span>
+                    <span>Scanning ({liveScanPct}%)...</span>
                   </>
                 ) : (
                   <span>
-                    {selectedFile || imagePreview
+                    {hasUploadedImage
                       ? "Scan Uploaded Photo"
-                      : "Next"}
+                      : "Upload Photo to Continue"}
                   </span>
                 )}
               </button>
@@ -767,10 +896,14 @@ export function MedicineScannerWorkspace() {
                           <Loader2 className="size-3 animate-spin" />
                           অডিও তৈরি হচ্ছে...
                         </span>
-                      ) : (
+                      ) : isVoiceReady ? (
                         <span className="inline-flex items-center gap-1 rounded-full bg-emerald-400/20 text-emerald-200 border border-emerald-300/30 px-2.5 py-0.5 text-[10px] font-bold">
                           <Check className="size-3 stroke-[3]" />
                           {isPlayingVoice ? "চলছে (Playing)" : "প্রস্তুত (Ready)"}
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-white/15 text-teal-100 border border-white/20 px-2.5 py-0.5 text-[10px] font-bold">
+                          ব্রাউজার ভয়েস (Fallback)
                         </span>
                       )}
                     </div>
@@ -1083,11 +1216,15 @@ export function MedicineScannerWorkspace() {
       {activeMedicine && (
         <div
           onClick={() => setActiveMedicine(null)}
+          data-lenis-prevent="true"
           className="fixed inset-0 z-50 bg-[#09353c]/55 backdrop-blur-xs flex items-center justify-center p-4"
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="relative w-full max-w-2xl max-h-[86vh] overflow-y-auto rounded-[2.25rem] bg-white p-6 sm:p-8 shadow-2xl border border-teal-100 space-y-6"
+            onWheel={(e) => e.stopPropagation()}
+            onTouchMove={(e) => e.stopPropagation()}
+            data-lenis-prevent="true"
+            className="relative w-full max-w-2xl max-h-[86vh] overflow-y-auto overscroll-contain rounded-[2.25rem] bg-white p-6 sm:p-8 shadow-2xl border border-teal-100 space-y-6"
           >
             {/* Modal Header */}
             <div className="flex items-start justify-between gap-4 border-b border-teal-100 pb-5">

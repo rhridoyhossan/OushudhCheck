@@ -4,6 +4,7 @@ import React, { useEffect, useRef } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import gsap from "gsap";
+import { useParallaxZoom } from "@/components/scroll-reveal";
 import {
   Volume2,
   ArrowRight,
@@ -17,6 +18,7 @@ import {
 
 export function HealthcareShowcaseCard() {
   const containerRef = useRef<HTMLElement | null>(null);
+  useParallaxZoom(containerRef);
 
   useEffect(() => {
     const ctx = gsap.context(() => {
@@ -44,6 +46,7 @@ export function HealthcareShowcaseCard() {
   return (
     <section
       ref={containerRef}
+      data-reveal="scale"
       className="relative max-w-5xl mx-auto px-4 sm:px-6 pt-4 pb-12"
     >
       {/* Top Floating Circular Avatar / Badge Accents */}

@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useRef } from "react";
+import gsap from "gsap";
 import {
   Search,
   Heart,
@@ -134,6 +135,37 @@ export function MedicineDatabaseDirectory() {
   const [activeMedicine, setActiveMedicine] = useState<MedicineRecord | null>(
     null
   );
+  const cardsGridRef = useRef<HTMLDivElement | null>(null);
+
+  // One-by-one staggered card stack fade-in animation whenever database cards load
+  useEffect(() => {
+    if (isLoading || items.length === 0 || !cardsGridRef.current) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+    const ctx = gsap.context(() => {
+      gsap.fromTo(
+        ".db-med-card",
+        {
+          opacity: 0,
+          y: 26,
+          scale: 0.94,
+          transformOrigin: "center center",
+        },
+        {
+          opacity: 1,
+          y: 0,
+          scale: 1,
+          duration: 0.52,
+          stagger: 0.045,
+          ease: "power3.out",
+          clearProps: "transform,opacity",
+          overwrite: "auto",
+        }
+      );
+    }, cardsGridRef);
+
+    return () => ctx.revert();
+  }, [isLoading, items]);
 
   // Lock background page scroll and allow Escape key to close modal cleanly
   useEffect(() => {
@@ -162,35 +194,47 @@ export function MedicineDatabaseDirectory() {
     return () => clearTimeout(timer);
   }, [searchInput]);
 
-  const fetchMedicines = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      const params = new URLSearchParams({
-        q: debouncedQuery,
-        dosageForm: selectedForm,
-        page: String(page),
-        limit: "24",
-      });
-      const res = await fetch(`/api/medicines?${params.toString()}`);
-      if (res.ok) {
-        const data = await res.json();
+  useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+
+    const params = new URLSearchParams({
+      q: debouncedQuery,
+      dosageForm: selectedForm,
+      page: String(page),
+      limit: "24",
+    });
+
+    Promise.resolve()
+      .then(() => {
+        if (active) setIsLoading(true);
+        return fetch(`/api/medicines?${params.toString()}`, {
+          signal: controller.signal,
+        });
+      })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!active || !data) return;
         setItems(data.items || []);
         setTotal(data.total ?? 0);
         setTotalPages(data.totalPages ?? 1);
         if (data.stats) {
           setStats(data.stats);
         }
-      }
-    } catch (err) {
-      console.error("Failed to fetch medicines:", err);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [debouncedQuery, selectedForm, page]);
+      })
+      .catch((err) => {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        console.error("Failed to fetch medicines:", err);
+      })
+      .finally(() => {
+        if (active) setIsLoading(false);
+      });
 
-  useEffect(() => {
-    fetchMedicines();
-  }, [fetchMedicines]);
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [debouncedQuery, selectedForm, page]);
 
   const toggleSave = (brandId: number, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -203,8 +247,8 @@ export function MedicineDatabaseDirectory() {
       <div className="text-center max-w-2xl mx-auto">
         <span className="inline-flex items-center gap-1.5 rounded-full bg-white/85 px-4 py-1 text-xs font-bold text-[#0ea86b] shadow-2xs border border-white">
           <Database className="size-3.5" />
-          {stats.totalBrands.toLocaleString()} Brands •{" "}
-          {stats.totalGenerics.toLocaleString()} Generic Compounds
+          {stats.totalBrands.toLocaleString("en-US")} Brands •{" "}
+          {stats.totalGenerics.toLocaleString("en-US")} Generic Compounds
         </span>
         <h1 className="text-3xl sm:text-5xl font-extrabold tracking-tight text-[#09353c] mt-4">
           Bangladeshi Medicine Database
@@ -276,7 +320,7 @@ export function MedicineDatabaseDirectory() {
           <span>
             Showing{" "}
             <strong className="text-[#09353c]">
-              {total.toLocaleString()}
+              {total.toLocaleString("en-US")}
             </strong>{" "}
             matching medicines
           </span>
@@ -297,14 +341,17 @@ export function MedicineDatabaseDirectory() {
             ))}
           </div>
         ) : (
-          <div className="relative z-10 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-2">
+          <div
+            ref={cardsGridRef}
+            className="relative z-10 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-2"
+          >
             {items.map((med) => {
               const isSaved = !!savedBrands[med.brand_id];
               return (
                 <div
                   key={med.brand_id}
                   onClick={() => setActiveMedicine(med)}
-                  className="group rounded-2xl bg-white/95 backdrop-blur-md p-5 border border-white shadow-[0_8px_25px_rgba(11,85,99,0.06)] hover:shadow-[0_14px_35px_rgba(14,168,107,0.15)] hover:-translate-y-0.5 transition-all flex flex-col justify-between cursor-pointer"
+                  className="db-med-card group rounded-2xl bg-white/95 backdrop-blur-md p-5 border border-white shadow-[0_8px_25px_rgba(11,85,99,0.06)] hover:shadow-[0_14px_35px_rgba(14,168,107,0.15)] hover:-translate-y-0.5 transition-all flex flex-col justify-between cursor-pointer"
                 >
                   <div className="space-y-2.5">
                     {/* Top Row: Left Teal/Emerald Circle Icon + Right Dosage Tag & Heart Icon */}
@@ -401,7 +448,7 @@ export function MedicineDatabaseDirectory() {
             </button>
 
             <span className="rounded-full bg-[#0b5563] text-white text-xs font-bold px-4 py-2 shadow-xs">
-              {page} / {totalPages.toLocaleString()}
+              {page} / {totalPages.toLocaleString("en-US")}
             </span>
 
             <button

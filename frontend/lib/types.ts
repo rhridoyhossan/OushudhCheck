@@ -131,7 +131,7 @@ export interface ScanAnalysisResult {
   alerts: SafetyAlert[];
   banglaVoiceScript: string;
   englishTranslation: string;
-  audioUrl?: string;
+  audioUrl?: string | null;
   transparencyInspector?: TransparencyInspectorData;
   sampleId?: string;
   sampleTitle?: string;

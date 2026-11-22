@@ -98,7 +98,92 @@
   }
   html {
     @apply font-sans;
+    scrollbar-width: thin;
+    scrollbar-color: #0d9488 #e3f1ef;
   }
+}
+
+/* Lenis smooth-scroll required height & overflow rules (prevents scroll lock on dynamic content) */
+html.lenis,
+html.lenis body {
+  height: auto;
+}
+
+.lenis.lenis-smooth {
+  scroll-behavior: auto !important;
+}
+
+.lenis.lenis-smooth [data-lenis-prevent] {
+  overscroll-behavior: contain;
+}
+
+.lenis.lenis-stopped {
+  overflow: hidden;
+}
+
+/* Custom OushudhCheck Scrollbar (Deep Teal -> Emerald pill thumb on Soft Mint track) */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #0ea86b #d4ebe7;
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+
+html::-webkit-scrollbar-track,
+body::-webkit-scrollbar-track {
+  background: linear-gradient(180deg, #e3f1ef 0%, #d4ebe7 50%, #e3f1ef 100%);
+  border-left: 1px solid rgba(13, 148, 136, 0.14);
+}
+
+html::-webkit-scrollbar-thumb,
+body::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #0b5563 0%, #0d9488 45%, #0ea86b 100%);
+  border-radius: 9999px;
+  border: 2px solid #e3f1ef;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25);
+}
+
+html::-webkit-scrollbar-thumb:hover,
+body::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #09353c 0%, #0b5563 45%, #0ea86b 100%);
+  border: 1.5px solid #e3f1ef;
+}
+
+html::-webkit-scrollbar-thumb:active,
+body::-webkit-scrollbar-thumb:active {
+  background: linear-gradient(180deg, #09353c 0%, #0ea86b 100%);
+}
+
+/* Slim custom scrollbar for modals, code/OCR boxes, and horizontal pill bars */
+*::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+*::-webkit-scrollbar-track {
+  background: #eaf5f3;
+  border-radius: 9999px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #0d9488 0%, #0ea86b 100%);
+  border-radius: 9999px;
+  border: 1.5px solid transparent;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #0b5563 0%, #0ea86b 100%);
+  border: 1.5px solid transparent;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 @keyframes float-gentle {

@@ -3,7 +3,7 @@ import re
 from pathlib import Path
 from datetime import datetime
 
-ROOT_DIR = Path(r"D:\Desktop\ousod\OushudhCheck")
+ROOT_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT_DIR / "data" / "processed" / "medicines.db"
 REPORT_PATH = ROOT_DIR / "data" / "processed" / "beginner_summary_report.md"
 

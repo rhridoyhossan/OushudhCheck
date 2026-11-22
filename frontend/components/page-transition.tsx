@@ -12,102 +12,95 @@ export function PageTransition({ children }: { children: React.ReactNode }) {
   const mottoRef = useRef<HTMLParagraphElement | null>(null);
   const hasPlayedInitialIntroRef = useRef(false);
 
-  // Run ONLY once on the very first website load (never on route/link changes like Overview -> Database)
+  // Run once on full page load (RootLayout stays mounted across route/link changes)
   useEffect(() => {
     const curtain = curtainRef.current;
     if (!curtain) return;
 
-    // If intro has already played in this browser tab session, hide immediately so website opens right away
-    try {
-      if (
-        hasPlayedInitialIntroRef.current ||
-        window.sessionStorage.getItem("oushudhcheck_intro_seen") === "1"
-      ) {
-        gsap.set(curtain, {
-          autoAlpha: 0,
-          pointerEvents: "none",
-          display: "none",
-        });
-        return;
-      }
-      window.sessionStorage.setItem("oushudhcheck_intro_seen", "1");
-    } catch {
-      // sessionStorage unavailable
+    if (hasPlayedInitialIntroRef.current) {
+      gsap.set(curtain, {
+        autoAlpha: 0,
+        pointerEvents: "none",
+        display: "none",
+      });
+      return;
     }
 
-    hasPlayedInitialIntroRef.current = true;
-
-    // Failsafe timer: guarantee curtain always clears within 1.8s even if tab was backgrounded
+    // Failsafe timer: guarantee curtain always clears within 3.8s even if tab was backgrounded
     const safetyTimer = window.setTimeout(() => {
+      hasPlayedInitialIntroRef.current = true;
       if (curtainRef.current) {
         curtainRef.current.style.display = "none";
         curtainRef.current.style.pointerEvents = "none";
       }
-    }, 1800);
+    }, 3800);
 
-    const enterDuration = 0.42;
-    const holdDelay = 0.28;
-    const liftDuration = 0.62;
+    const enterDuration = 0.65;
+    const holdDelay = 0.5;
+    const liftDuration = 0.75;
 
-    gsap.set(curtain, {
-      yPercent: 0,
-      autoAlpha: 1,
-      pointerEvents: "auto",
-    });
-
-    const tl = gsap.timeline({
-      onComplete: () => {
-        window.clearTimeout(safetyTimer);
-        gsap.set(curtain, {
-          autoAlpha: 0,
-          pointerEvents: "none",
-          display: "none",
-        });
-      },
-    });
-
-    tl.fromTo(
-      logoRef.current,
-      { scale: 0.78, opacity: 0, y: 18 },
-      {
-        scale: 1,
-        opacity: 1,
-        y: 0,
-        duration: enterDuration,
-        ease: "back.out(1.6)",
-      }
-    )
-      .fromTo(
-        brandRef.current,
-        { opacity: 0, y: 12 },
-        {
-          opacity: 1,
-          y: 0,
-          duration: enterDuration * 0.8,
-          ease: "power3.out",
-        },
-        "-=0.2"
-      )
-      .fromTo(
-        mottoRef.current,
-        { opacity: 0, y: 10 },
-        {
-          opacity: 1,
-          y: 0,
-          duration: enterDuration * 0.8,
-          ease: "power3.out",
-        },
-        "-=0.16"
-      )
-      .set(curtain, { pointerEvents: "none" }, `+=${holdDelay}`)
-      .to(curtain, {
-        yPercent: -100,
-        duration: liftDuration,
-        ease: "power4.inOut",
+    const ctx = gsap.context(() => {
+      gsap.set(curtain, {
+        yPercent: 0,
+        autoAlpha: 1,
+        display: "flex",
+        pointerEvents: "auto",
       });
 
-    const contentTween = contentRef.current
-      ? gsap.fromTo(
+      const tl = gsap.timeline({
+        onComplete: () => {
+          hasPlayedInitialIntroRef.current = true;
+          window.clearTimeout(safetyTimer);
+          gsap.set(curtain, {
+            autoAlpha: 0,
+            pointerEvents: "none",
+            display: "none",
+          });
+        },
+      });
+
+      tl.fromTo(
+        logoRef.current,
+        { scale: 0.78, opacity: 0, y: 18 },
+        {
+          scale: 1,
+          opacity: 1,
+          y: 0,
+          duration: enterDuration,
+          ease: "back.out(1.6)",
+        }
+      )
+        .fromTo(
+          brandRef.current,
+          { opacity: 0, y: 12 },
+          {
+            opacity: 1,
+            y: 0,
+            duration: enterDuration * 0.8,
+            ease: "power3.out",
+          },
+          "-=0.2"
+        )
+        .fromTo(
+          mottoRef.current,
+          { opacity: 0, y: 10 },
+          {
+            opacity: 1,
+            y: 0,
+            duration: enterDuration * 0.8,
+            ease: "power3.out",
+          },
+          "-=0.16"
+        )
+        .set(curtain, { pointerEvents: "none" }, `+=${holdDelay}`)
+        .to(curtain, {
+          yPercent: -100,
+          duration: liftDuration,
+          ease: "power4.inOut",
+        });
+
+      if (contentRef.current) {
+        gsap.fromTo(
           contentRef.current,
           { opacity: 0, y: 16 },
           {
@@ -118,13 +111,13 @@ export function PageTransition({ children }: { children: React.ReactNode }) {
             ease: "power3.out",
             clearProps: "transform",
           }
-        )
-      : null;
+        );
+      }
+    });
 
     return () => {
       window.clearTimeout(safetyTimer);
-      tl.kill();
-      contentTween?.kill();
+      ctx.revert();
     };
   }, []);
 

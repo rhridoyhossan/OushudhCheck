@@ -159,11 +159,16 @@ class SafetySLMEngine:
         refined = set(brand_candidates)
 
         # 1. Multi-word brand upgrade: if 'napa' is detected and 'extra' is in the OCR tokens, upgrade to 'napa extra'
+        # Only upgrade when the combined brand is already in `refined` or exists in `known_db_words`.
         for base in list(refined):
             for mod in BRAND_MODIFIERS:
                 if mod in all_ocr_words_lower:
                     combo = f"{base} {mod}"
-                    if combo in refined or (base == "napa" and mod in ("extra", "extend", "rapid", "one")):
+                    if combo in refined or (
+                        base == "napa"
+                        and mod in ("extra", "extend", "rapid", "one")
+                        and (known_db_words is None or combo in known_db_words)
+                    ):
                         refined.add(combo)
                         if base in refined:
                             refined.discard(base)
@@ -314,6 +319,13 @@ class SafetySLMEngine:
                 f"⚠️ সতর্কতা: একই জেনেরিক উপাদান ({med.generic}) একাধিক পাতায় রয়েছে! ওভারডোজ এড়াতে চিকিৎসকের পরামর্শ ছাড়া একসাথে খাবেন না।",
                 bangla_summary,
                 "⚠️ বর্জন করুন (ডুপ্লিকেট)",
+            )
+
+        if is_interaction:
+            return (
+                f"⚠️ আন্তঃক্রিয়া সতর্কতা: {med.brand_name} ({strength_str}) অন্য শনাক্তকৃত ওষুধের সাথে প্রতিক্রিয়া করতে পারে। একসাথে সেবনের আগে অবশ্যই চিকিৎসকের পরামর্শ নিন।",
+                bangla_summary,
+                "⚠️ সতর্কতা (আন্তঃক্রিয়া)",
             )
 
         if any(p in gen_low for p in ("omeprazole", "esomeprazole", "pantoprazole", "rabeprazole", "lansoprazole", "dexlansoprazole")):

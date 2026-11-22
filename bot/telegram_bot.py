@@ -13,13 +13,15 @@ Features:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 import asyncio
+import html
 import logging
 import os
 import sys
 import tempfile
 import time
+import uuid
 
 import aiohttp
 import cv2
@@ -33,8 +35,34 @@ if str(ROOT_DIR) not in sys.path:
 load_dotenv(ROOT_DIR / ".env")
 
 from backend.app.services.ocr import MedicineStripScanner, evaluate_multi_strip_safety
-from backend.app.services.slm import generate_bangla_beginner_summary
 from backend.app.services.voice import synthesize_bangla_speech, transcribe_bangla_audio
+
+MAX_TELEGRAM_MSG_LEN = 3900
+MAX_DOWNLOAD_BYTES = 15 * 1024 * 1024  # 15 MB
+
+
+def _esc(val: Any) -> str:
+    return html.escape(str(val), quote=False)
+
+
+def _chunk_html_blocks(blocks: List[str], max_len: int = MAX_TELEGRAM_MSG_LEN) -> List[str]:
+    chunks: List[str] = []
+    current = ""
+    for block in blocks:
+        candidate = f"{current}\n{block}" if current else block
+        if len(candidate) <= max_len:
+            current = candidate
+        else:
+            if current:
+                chunks.append(current)
+            if len(block) <= max_len:
+                current = block
+            else:
+                chunks.append(block[: max_len - 3] + "...")
+                current = ""
+    if current:
+        chunks.append(current)
+    return chunks or [""]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -134,7 +162,7 @@ class OushudhCheckTelegramBot:
 
     async def handle_start(self, session: aiohttp.ClientSession, chat_id: int, user_name: str) -> None:
         welcome = (
-            f"👋 <b>স্বাগতম {user_name}!</b> আমি <b>OushudhCheck AI</b> (@{TELEGRAM_BOT_USERNAME})।\n\n"
+            f"👋 <b>স্বাগতম {_esc(user_name)}!</b> আমি <b>OushudhCheck AI</b> (@{_esc(TELEGRAM_BOT_USERNAME)})।\n\n"
             "📸 <b>কীভাবে ব্যবহার করবেন:</b>\n"
             "১. টেবিলের ওপর ১ থেকে ৬টি ওষুধের পাতা (Medicine Strip) রেখে একটি স্পষ্ট ছবি তুলে পাঠান।\n"
             "২. 🎤 <b>বাংলা ভয়েস মেসেজ:</b> যেকোনো ওষুধ সম্পর্কে বাংলায় ভয়েস মেসেজ পাঠিয়ে প্রশ্ন করুন।\n"
@@ -143,6 +171,19 @@ class OushudhCheckTelegramBot:
             "<b>সকাল-দুপুর-রাত খাওয়ার নিয়ম</b> এবং <b>ডুপ্লিকেট বা আন্তঃক্রিয়া সতর্কতা</b> বাংলা ভয়েসসহ জানিয়ে দেবো!"
         )
         await self.send_text(session, chat_id, welcome)
+
+    async def _download_bounded(self, session: aiohttp.ClientSession, url: str) -> Optional[bytes]:
+        async with session.get(url) as dl_resp:
+            if dl_resp.status != 200:
+                return None
+            chunks: List[bytes] = []
+            total = 0
+            async for chunk in dl_resp.content.iter_chunked(64 * 1024):
+                total += len(chunk)
+                if total > MAX_DOWNLOAD_BYTES:
+                    return None
+                chunks.append(chunk)
+            return b"".join(chunks)
 
     async def handle_photo(
         self,
@@ -169,17 +210,22 @@ class OushudhCheckTelegramBot:
             await self.edit_text(session, chat_id, progress_msg_id, "❌ ছবিটি ডাউনলোড করা যায়নি। অনুগ্রহ করে আবার চেষ্টা করুন।")
             return
 
-        async with session.get(f"{FILE_BASE}/{file_path}") as dl_resp:
-            img_bytes = await dl_resp.read()
+        img_bytes = await self._download_bounded(session, f"{FILE_BASE}/{file_path}")
+        if not img_bytes:
+            await self.edit_text(session, chat_id, progress_msg_id, "❌ ছবিটি ডাউনলোড করা যায়নি অথবা ফাইলের আকার ১৫ MB এর বেশি।")
+            return
 
-        arr = np.frombuffer(img_bytes, dtype=np.uint8)
-        image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        def _decode_img(raw: bytes) -> Optional[np.ndarray]:
+            arr = np.frombuffer(raw, dtype=np.uint8)
+            return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+        image = await asyncio.to_thread(_decode_img, img_bytes)
         if image is None:
             await self.edit_text(session, chat_id, progress_msg_id, "❌ ছবির ফরম্যাট পড়া যায়নি। স্পষ্ট JPEG/PNG ছবি পাঠান।")
             return
 
         h, w = image.shape[:2]
-        _ = self.scanner.detector.detect_strips(image)
+        await asyncio.to_thread(self.scanner.detector.detect_strips, image)
 
         # Stage 2/5 Progress
         await self.edit_text(
@@ -189,10 +235,10 @@ class OushudhCheckTelegramBot:
             "⏳ <b>[ধাপ ২/৫]</b> ফয়েল গ্লেয়ার রিমুভাল (<b>CLAHE</b>) ও <b>PP-OCRv6</b> টেক্সট এক্সট্রাকশন চলছে...\n"
             "<code>[■■■■□□□□□□] 45%</code>",
         )
-        ocr_lines = self.scanner.ocr_engine.extract_lines(image, include_rotated=True)
+        ocr_lines = await asyncio.to_thread(self.scanner.ocr_engine.extract_lines, image, True)
         if not ocr_lines:
-            enhanced = self.scanner.detector.preprocess_for_ocr(image)
-            ocr_lines = self.scanner.ocr_engine.extract_lines(enhanced, include_rotated=True)
+            enhanced = await asyncio.to_thread(self.scanner.detector.preprocess_for_ocr, image)
+            ocr_lines = await asyncio.to_thread(self.scanner.ocr_engine.extract_lines, enhanced, True)
 
         # Stage 3/5 Progress
         await self.edit_text(
@@ -202,21 +248,26 @@ class OushudhCheckTelegramBot:
             f"⏳ <b>[ধাপ ৩/৫]</b> {len(ocr_lines)}টি টেক্সট লাইন পাওয়া গেছে। <b>RapidFuzz + ১৭,১৯১টি ওষুধের ডাটাবেস</b> ম্যাচিং চলছে...\n"
             "<code>[■■■■■■■□□□] 70%</code>",
         )
-        clusters = self.scanner._cluster_ocr_lines_into_strips(ocr_lines, img_w=w, img_h=h)
-        strip_results = []
-        for idx, (b_low, sc, meth, lns, bbox) in enumerate(clusters, start=1):
-            raw_text = "\n".join(line.text for line in lns)
-            res = self.scanner.matcher.match_strip_text(
-                raw_text=raw_text,
-                ocr_lines=lns,
-                strip_index=idx,
-                bbox=bbox,
-                forced_brand_lower=b_low if b_low else None,
-                forced_score=sc,
-                forced_method=meth,
-                slm_engine=self.scanner.slm,
-            )
-            strip_results.append(res)
+
+        def _cluster_and_match():
+            clusters = self.scanner._cluster_ocr_lines_into_strips(ocr_lines, img_w=w, img_h=h)
+            results = []
+            for idx, (b_low, sc, meth, lns, bbox) in enumerate(clusters, start=1):
+                raw_text = "\n".join(line.text for line in lns)
+                res = self.scanner.matcher.match_strip_text(
+                    raw_text=raw_text,
+                    ocr_lines=lns,
+                    strip_index=idx,
+                    bbox=bbox,
+                    forced_brand_lower=b_low if b_low else None,
+                    forced_score=sc,
+                    forced_method=meth,
+                    slm_engine=self.scanner.slm,
+                )
+                results.append(res)
+            return results
+
+        strip_results = await asyncio.to_thread(_cluster_and_match)
 
         matched = [s for s in strip_results if s.matched_medicine is not None]
         if not matched:
@@ -258,27 +309,29 @@ class OushudhCheckTelegramBot:
                 is_interaction=(s.strip_index in inter_ids),
             )
             lines_out.append(
-                f"<b>{idx}. {m.brand_name}</b> — <code>{strength}</code> ({form})\n"
-                f"   • <b>জেনেরিক:</b> {m.generic}\n"
-                f"   • <b>প্রস্তুতকারক:</b> {m.manufacturer or 'N/A'}\n"
-                f"   • <b>খাওয়ার সময়সূচী:</b> <code>{timing_tag}</code>\n"
-                f"   • <b>নির্দেশনা:</b> {dosage_bn}\n"
-                f"   • <b>বাংলা সারসংক্ষেপ:</b> {bangla_summary}\n"
+                f"<b>{idx}. {_esc(m.brand_name)}</b> — <code>{_esc(strength)}</code> ({_esc(form)})\n"
+                f"   • <b>জেনেরিক:</b> {_esc(m.generic)}\n"
+                f"   • <b>প্রস্তুতকারক:</b> {_esc(m.manufacturer or 'N/A')}\n"
+                f"   • <b>খাওয়ার সময়সূচী:</b> <code>{_esc(timing_tag)}</code>\n"
+                f"   • <b>নির্দেশনা:</b> {_esc(dosage_bn)}\n"
+                f"   • <b>বাংলা সারসংক্ষেপ:</b> {_esc(bangla_summary)}\n"
             )
             voice_parts.append(f"স্ট্রিপ {idx}: {m.brand_name}, মাত্রা {strength}। {dosage_bn}")
 
         if alerts:
             lines_out.append("🚨 <b>সতর্কতা (Safety Alerts):</b>")
             for a in alerts:
-                lines_out.append(f"• ⚠️ <b>{a.message_bn}</b>")
+                lines_out.append(f"• ⚠️ <b>{_esc(a.message_bn)}</b>")
                 voice_parts.append(a.message_bn)
         else:
             lines_out.append("✅ <b>নিরাপত্তা যাচাই:</b> শনাক্তকৃত ওষুধে কোনো ডুপ্লিকেট জেনেরিক বা ঝুঁকিপূর্ণ আন্তঃক্রিয়া পাওয়া যায়নি।")
             voice_parts.append("ওষুধগুলোতে কোনো ডুপ্লিকেট উপাদান পাওয়া যায়নি।")
 
-        # Update progress message to final report immediately so user gets text results ASAP without waiting for TTS!
-        report_html = "\n".join(lines_out)
-        await self.edit_text(session, chat_id, progress_msg_id, report_html)
+        # Update progress message to final report immediately (chunked safely under Telegram's 4096-char limit)
+        report_chunks = _chunk_html_blocks(lines_out)
+        await self.edit_text(session, chat_id, progress_msg_id, report_chunks[0])
+        for extra_chunk in report_chunks[1:]:
+            await self.send_text(session, chat_id, extra_chunk)
 
         # Stage 5/5 Voice Generation: Show a separate live "Voice is generating..." status message until audio arrives!
         voice_status_id = await self.send_text(
@@ -325,14 +378,16 @@ class OushudhCheckTelegramBot:
             await self.edit_text(session, chat_id, p_id, "❌ ভয়েস ফাইলটি ডাউনলোড করা যায়নি।")
             return
 
-        async with session.get(f"{FILE_BASE}/{file_path}") as dl_resp:
-            voice_bytes = await dl_resp.read()
+        voice_bytes = await self._download_bounded(session, f"{FILE_BASE}/{file_path}")
+        if not voice_bytes:
+            await self.edit_text(session, chat_id, p_id, "❌ ভয়েস ফাইলটি ডাউনলোড করা যায়নি।")
+            return
 
-        tmp_ogg = Path(tempfile.gettempdir()) / f"tg_voice_{chat_id}_{int(time.time())}.ogg"
+        tmp_ogg = Path(tempfile.gettempdir()) / f"tg_voice_{chat_id}_{uuid.uuid4().hex}.ogg"
         tmp_ogg.write_bytes(voice_bytes)
 
         try:
-            transcribed = transcribe_bangla_audio(tmp_ogg)
+            transcribed = await asyncio.to_thread(transcribe_bangla_audio, tmp_ogg)
         finally:
             tmp_ogg.unlink(missing_ok=True)
 
@@ -349,7 +404,7 @@ class OushudhCheckTelegramBot:
             session,
             chat_id,
             p_id,
-            f"🗣️ <b>আপনি বলেছেন:</b> <i>“{transcribed}”</i>\n🔍 ডাটাবেস থেকে তথ্য খোঁজা হচ্ছে...",
+            f"🗣️ <b>আপনি বলেছেন:</b> <i>“{_esc(transcribed)}”</i>\n🔍 ডাটাবেস থেকে তথ্য খোঁজা হচ্ছে...",
         )
         await self.handle_text_query(session, chat_id, transcribed, user_name, existing_msg_id=p_id)
 
@@ -366,17 +421,27 @@ class OushudhCheckTelegramBot:
             existing_msg_id = await self.send_text(
                 session,
                 chat_id,
-                f"🔍 <code>{text}</code> ওষুধের তথ্য খোঁজা হচ্ছে (<b>RapidFuzz + Safety SLM</b>)...",
+                f"🔍 <code>{_esc(text)}</code> ওষুধের তথ্য খোঁজা হচ্ছে (<b>RapidFuzz + Safety SLM</b>)...",
             )
 
-        res = self.scanner.matcher.match_strip_text(raw_text=text, strip_index=1, slm_engine=self.scanner.slm)
+        res = await asyncio.to_thread(
+            self.scanner.matcher.match_strip_text,
+            text,
+            None,
+            1,
+            None,
+            None,
+            100.0,
+            "exact_brand",
+            self.scanner.slm,
+        )
         m = res.matched_medicine
         if not m:
             await self.edit_text(
                 session,
                 chat_id,
                 existing_msg_id,
-                f"🔍 <code>{text}</code> নামে কোনো ওষুধ ডাটাবেসে পাওয়া যায়নি। সঠিক বানান লিখুন অথবা ওষুধের পাতার ছবি পাঠান।",
+                f"🔍 <code>{_esc(text)}</code> নামে কোনো ওষুধ ডাটাবেসে পাওয়া যায়নি। সঠিক বানান লিখুন অথবা ওষুধের পাতার ছবি পাঠান।",
             )
             return
 
@@ -385,13 +450,13 @@ class OushudhCheckTelegramBot:
             res, is_duplicate=False, is_interaction=False
         )
         reply = (
-            f"💊 <b>{m.brand_name}</b> — <code>{strength}</code> ({m.dosage_form or 'Tablet'})\n"
-            f"• <b>জেনেরিক:</b> {m.generic}\n"
-            f"• <b>শ্রেণী:</b> {m.drug_class or 'N/A'}\n"
-            f"• <b>প্রস্তুতকারক:</b> {m.manufacturer or 'N/A'}\n"
-            f"• <b>খাওয়ার সময়সূচী:</b> <code>{timing_tag}</code>\n"
-            f"• <b>নির্দেশনা:</b> {dosage_bn}\n\n"
-            f"📖 <b>সহজ বাংলা সারসংক্ষেপ:</b>\n{bangla_summary}"
+            f"💊 <b>{_esc(m.brand_name)}</b> — <code>{_esc(strength)}</code> ({_esc(m.dosage_form or 'Tablet')})\n"
+            f"• <b>জেনেরিক:</b> {_esc(m.generic)}\n"
+            f"• <b>শ্রেণী:</b> {_esc(m.drug_class or 'N/A')}\n"
+            f"• <b>প্রস্তুতকারক:</b> {_esc(m.manufacturer or 'N/A')}\n"
+            f"• <b>খাওয়ার সময়সূচী:</b> <code>{_esc(timing_tag)}</code>\n"
+            f"• <b>নির্দেশনা:</b> {_esc(dosage_bn)}\n\n"
+            f"📖 <b>সহজ বাংলা সারসংক্ষেপ:</b>\n{_esc(bangla_summary)}"
         )
         await self.edit_text(session, chat_id, existing_msg_id, reply)
 
@@ -409,7 +474,8 @@ class OushudhCheckTelegramBot:
             await self.delete_message(session, chat_id, voice_status_id)
 
     async def poll_forever(self) -> None:
-        async with aiohttp.ClientSession() as session:
+        timeout = aiohttp.ClientTimeout(total=60)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             me = await self.api_call(session, "getMe")
             if me.get("ok"):
                 bot_info = me["result"]

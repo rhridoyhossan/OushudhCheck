@@ -35,13 +35,14 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      suppressHydrationWarning
+      className={`${geistSans.variable} ${geistMono.variable} antialiased`}
     >
-      <body className="min-h-full flex flex-col">
+      <body suppressHydrationWarning className="min-h-screen flex flex-col">
         <SmoothScroll />
         <CustomCursor />
         <PageTransition>{children}</PageTransition>
-        <Toaster position="top-right" richColors />
+        <Toaster theme="light" position="top-right" richColors />
       </body>
     </html>
   );

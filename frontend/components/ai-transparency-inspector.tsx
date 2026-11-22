@@ -9,7 +9,6 @@ import {
   CheckCircle2,
   Clock,
   Cpu,
-  Database,
   Eye,
   FileCode2,
   GitBranch,
@@ -19,7 +18,6 @@ import {
   RefreshCw,
   ShieldCheck,
   Sparkles,
-  Volume2,
 } from "lucide-react";
 import {
   SafetyEdgeItem,
@@ -290,7 +288,7 @@ export function AITransparencyInspector({
             Total Turnaround Time
           </span>
           <p className="text-2xl font-extrabold text-[#09353c] font-mono">
-            {inspector.totalTurnaroundMs.toLocaleString()}{" "}
+            {inspector.totalTurnaroundMs.toLocaleString("en-US")}{" "}
             <span className="text-xs font-bold text-[#0ea86b]">ms</span>
           </p>
           <p className="text-[11px] text-[#46737a]">
@@ -544,7 +542,10 @@ export function AITransparencyInspector({
                     </span>
                     <span>Method: {ev.matchMethod}</span>
                   </div>
-                  <pre className="whitespace-pre-wrap break-words max-h-24 overflow-y-auto leading-relaxed text-[11px]">
+                  <pre
+                    data-lenis-prevent="true"
+                    className="whitespace-pre-wrap break-words max-h-24 overflow-y-auto overscroll-contain leading-relaxed text-[11px]"
+                  >
                     {ev.rawOcrText || "(No raw OCR lines)"}
                   </pre>
                 </div>
