@@ -5,7 +5,7 @@ Multi-Strip Medicine Safety Scanner & Bangla Voice Medication Assistant.
 Features:
 - Loads TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_USERNAME from .env
 - Live 5-Stage Progress Feedback (`editMessageText` + `sendChatAction`) so the user sees every pipeline step in real time
-- 100% Bangla Beginner Summary (`সহজ বাংলা সারসংক্ষেপ`), Morning/Noon/Night schedule, and duplicate/interaction warnings
+- Bangla Summary (`সহজ বাংলা সারসংক্ষেপ`), schedule, and duplicate warnings
 - Supports photo scans (1–6 strips), Bangla voice questions (`faster-whisper` ASR), and text queries
 - Replies with Bangla spoken voice audio (`edge-tts` `bn-BD-NabanitaNeural`)
 """
@@ -299,17 +299,19 @@ class OushudhCheckTelegramBot:
         if not matched_strips:
             return []
         sem = asyncio.Semaphore(2)
-
+    
         async def _one(strip: Any) -> Any:
             async with sem:
-                return await asyncio.to_thread(
-                    self.scanner.slm.build_schedule_and_guidance,
-                    strip,
-                    is_duplicate=(strip.strip_index in dup_ids),
-                    is_interaction=(strip.strip_index in inter_ids),
-                )
-
-        return list(await asyncio.gather(*(_one(s) for s in matched_strips)))
+                try:
+                    return await asyncio.to_thread(
+                        self.scanner.slm.build_schedule_and_guidance,
+                        strip,
+                        is_duplicate=(strip.strip_index in dup_ids),
+                        is_interaction=(strip.strip_index in inter_ids),
+                    )
+                except Exception as exc:
+                    logger.exception("[DEV-BOT] SLM guidance failed for strip %s: %s", strip.strip_index, exc)
+                    return self.scanner.slm.fallback_guidance(strip)
 
     async def handle_photo(
         self,
@@ -325,7 +327,7 @@ class OushudhCheckTelegramBot:
         progress_msg_id = await self.send_text(
             session,
             chat_id,
-            "⏳ <b>[ধাপ ১/৫]</b> ছবি ডাউনলোড ও <b>YOLO26 ONNX</b> স্ট্রিপ ডিটেকশন চলছে...\n"
+            "<b>[ধাপ ১/৫]</b> ছবি ডাউনলোড ও <b>YOLO26 ONNX</b> স্ট্রিপ ডিটেকশন চলছে...\n"
             "<code>[■■□□□□□□□□] 20%</code>",
         )
         await self.send_chat_action(session, chat_id, "typing")
@@ -367,7 +369,7 @@ class OushudhCheckTelegramBot:
             session,
             chat_id,
             progress_msg_id,
-            f"⏳ <b>[ধাপ ২/৫]</b> YOLO26{yolo_note} সম্পন্ন। <b>CLAHE + PP-OCRv6</b> টেক্সট এক্সট্রাকশন চলছে...\n"
+            f"<b>[ধাপ ২/৫]</b> YOLO26{yolo_note} সম্পন্ন। <b>CLAHE + PP-OCRv6</b> টেক্সট এক্সট্রাকশন চলছে...\n"
             "<code>[■■■■□□□□□□] 45%</code>",
         )
         ocr_lines, _, _ = await asyncio.to_thread(self.scanner.run_stage2_3_ocr, image)
@@ -377,7 +379,7 @@ class OushudhCheckTelegramBot:
             session,
             chat_id,
             progress_msg_id,
-            f"⏳ <b>[ধাপ ৩/৫]</b> {len(ocr_lines)}টি টেক্সট লাইন পাওয়া গেছে। <b>YOLO+OCR ফিউশন ও ১৭,১৯১টি ওষুধের ডাটাবেস</b> ম্যাচিং চলছে...\n"
+            f"<b>[ধাপ ৩/৫]</b> {len(ocr_lines)}টি টেক্সট লাইন পাওয়া গেছে। <b>YOLO+OCR ফিউশন ও ১৭,১৯১টি ওষুধের ডাটাবেস</b> ম্যাচিং চলছে...\n"
             "<code>[■■■■■■■□□□] 70%</code>",
         )
 
@@ -400,7 +402,7 @@ class OushudhCheckTelegramBot:
             session,
             chat_id,
             progress_msg_id,
-            f"⏳ <b>[ধাপ ৪/৫]</b> {len(matched)}টি ওষুধ শনাক্ত হয়েছে! <b>Gemma 3 1B Bangla SLM</b> বাংলা সারসংক্ষেপ ও ডুপ্লিকেট/আন্তঃক্রিয়া যাচাই চলছে...\n"
+            f"<b>[ধাপ ৪/৫]</b> {len(matched)}টি ওষুধ শনাক্ত হয়েছে! <b>Gemma 3 1B Bangla SLM</b> বাংলা সারসংক্ষেপ ও ডুপ্লিকেট/আন্তঃক্রিয়া যাচাই চলছে...\n"
             "<code>[■■■■■■■■■□] 90%</code>",
         )
         alerts, _, _ = evaluate_multi_strip_safety(strip_results)
@@ -440,13 +442,13 @@ class OushudhCheckTelegramBot:
             lines_out.append("✅ <b>নিরাপত্তা যাচাই:</b> শনাক্তকৃত ওষুধে কোনো ডুপ্লিকেট জেনেরিক বা ঝুঁকিপূর্ণ আন্তঃক্রিয়া পাওয়া যায়নি।")
             voice_parts.append("ওষুধগুলোতে কোনো ডুপ্লিকেট উপাদান পাওয়া যায়নি।")
 
-        # Remove the temporary progress bar cleanly before sending the final report so it never stays stuck at 70%/90%!
+        # Remove the temporary progress bar
         await self.delete_message(session, chat_id, progress_msg_id)
         report_chunks = _chunk_html_blocks(lines_out)
         for chunk in report_chunks:
             await self.send_text(session, chat_id, chunk)
 
-        # Stage 5/5 Voice Generation: Show a separate live "Voice is generating..." status message until audio arrives!
+        # Stage 5/5 Voice Generation: "Voice is generating..." status message
         voice_status_id = await self.send_text(
             session,
             chat_id,
@@ -541,7 +543,7 @@ class OushudhCheckTelegramBot:
             p = part.strip()
             if not p:
                 continue
-            # 2. Split space-separated 'brand1 500mg brand2 500mg' right after a dosage unit followed by a letter
+            # 2. Split space-separated name
             sub_parts = re.sub(
                 r"(\d\s*(?:mcg|mg|ml|iu|gm|g))\s+(?=[A-Za-z])",
                 r"\1\n",
@@ -648,8 +650,13 @@ class OushudhCheckTelegramBot:
             await self.send_chat_action(session, chat_id, "record_voice")
             audio_path = await synthesize_bangla_speech(bangla_summary)
             if audio_path and audio_path.exists():
-                await self.send_voice_mp3(session, chat_id, audio_path, caption=f"🔊 {m.brand_name} ({strength})")
-            await self.delete_message(session, chat_id, voice_status_id)
+                await self.send_voice_mp3(...)
+                await self.delete_message(session, chat_id, voice_status_id)
+            else:
+                await self.edit_text(
+                    session, chat_id, voice_status_id,
+                    "⚠️ ভয়েস অডিও তৈরি করা সম্ভব হয়নি, তবে লিখিত রিপোর্টটি সম্পূর্ণ যাচাইকৃত।"
+                )
             return
 
         # Multi-medicine comparison & safety check reply (e.g., 'napa 500mg vs ace 500mg')
@@ -722,6 +729,7 @@ class OushudhCheckTelegramBot:
 
             async def _dispatch_update(msg: Dict[str, Any]) -> None:
                 async with sem:
+                    progress_msg_id: Optional[int] = None
                     try:
                         chat_id = int(msg["chat"]["id"])
                         user_name = msg.get("from", {}).get("first_name", "User")
@@ -756,6 +764,16 @@ class OushudhCheckTelegramBot:
                                 await self.handle_text_query(session, chat_id, txt, user_name)
                     except Exception as exc:
                         logger.exception("[DEV-BOT] Update handler failed: %s", exc)
+                        try:
+                            # try to send a fallback error if chat_id is known
+                            chat_id = int(msg["chat"]["id"])
+                            await self.send_text(
+                                session, chat_id,
+                                "❌ <b>দুঃখিত, একটি অভ্যন্তরীণ ত্রুটি ঘটেছে।</b>\n"
+                                "অনুগ্রহ করে কিছুক্ষণ পর আবার চেষ্টা করুন, অথবা /help লিখুন।"
+                            )
+                        except Exception:
+                            pass
 
             while True:
                 try:
