@@ -40,4 +40,9 @@ app.include_router(api_router, prefix="/api")
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "service": "oushudhcheck-fastapi"}
+    scanner = get_scanner()
+    return {
+        "status": "ok",
+        "service": "oushudhcheck-fastapi",
+        "detector": scanner.detector.get_model_info(),
+    }

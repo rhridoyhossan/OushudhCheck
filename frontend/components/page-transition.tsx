@@ -127,7 +127,7 @@ export function PageTransition({ children }: { children: React.ReactNode }) {
       <div
         ref={curtainRef}
         aria-hidden="true"
-        className="fixed inset-0 z-[9995] flex flex-col items-center justify-center bg-gradient-to-br from-[#e3f1ef] via-[#f1faf8] to-[#d4ebe7] px-6 select-none will-change-transform"
+        className="fixed inset-0 z-9995 flex flex-col items-center justify-center bg-linear-to-br from-[#e3f1ef] via-[#f1faf8] to-[#d4ebe7] px-6 select-none will-change-transform"
       >
         {/* Soft ambient teal/emerald glow behind logo */}
         <div className="pointer-events-none absolute size-72 rounded-full bg-[#0ea86b]/15 blur-3xl" />
@@ -159,7 +159,7 @@ export function PageTransition({ children }: { children: React.ReactNode }) {
           >
             Know Your Medicines.
             <br />
-            <span className="bg-gradient-to-r from-[#0b5563] via-[#0d9488] to-[#0ea86b] bg-clip-text text-transparent">
+            <span className="bg-linear-to-r from-[#0b5563] via-[#0d9488] to-[#0ea86b] bg-clip-text text-transparent">
               Protect Your Health.
             </span>
           </p>

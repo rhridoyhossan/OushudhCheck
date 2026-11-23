@@ -300,7 +300,7 @@ class OushudhCheckTelegramBot:
         progress_msg_id = await self.send_text(
             session,
             chat_id,
-            "⏳ <b>[ধাপ ১/৫]</b> ছবি ডাউনলোড ও <b>YOLO26n ONNX</b> স্ট্রিপ ডিটেকশন চলছে...\n"
+            "⏳ <b>[ধাপ ১/৫]</b> ছবি ডাউনলোড ও <b>YOLO26 ONNX</b> স্ট্রিপ ডিটেকশন চলছে...\n"
             "<code>[■■□□□□□□□□] 20%</code>",
         )
         await self.send_chat_action(session, chat_id, "typing")
@@ -326,48 +326,39 @@ class OushudhCheckTelegramBot:
             return
 
         h, w = image.shape[:2]
+        if h * w > 25_000_000:
+            await self.edit_text(session, chat_id, progress_msg_id, "❌ ছবির রেজোলিউশন অনেক বড় (সর্বোচ্চ ২৫ মেগাপিক্সেল)।")
+            return
+
+        detection, yolo_ms = await asyncio.to_thread(self.scanner.run_stage1_detect, image)
+        yolo_note = (
+            f" ({detection.raw_count}টি স্ট্রিপ শনাক্ত • {yolo_ms}ms)"
+            if detection.is_real_model
+            else ""
+        )
 
         # Stage 2/5 Progress
         await self.edit_text(
             session,
             chat_id,
             progress_msg_id,
-            "⏳ <b>[ধাপ ২/৫]</b> ফয়েল গ্লেয়ার রিমুভাল (<b>CLAHE</b>) ও <b>PP-OCRv6</b> টেক্সট এক্সট্রাকশন চলছে...\n"
+            f"⏳ <b>[ধাপ ২/৫]</b> YOLO26{yolo_note} সম্পন্ন। <b>CLAHE + PP-OCRv6</b> টেক্সট এক্সট্রাকশন চলছে...\n"
             "<code>[■■■■□□□□□□] 45%</code>",
         )
-        ocr_lines = await asyncio.to_thread(self.scanner.ocr_engine.extract_lines, image, True)
-        if not ocr_lines:
-            enhanced = await asyncio.to_thread(self.scanner.detector.preprocess_for_ocr, image)
-            ocr_lines = await asyncio.to_thread(self.scanner.ocr_engine.extract_lines, enhanced, True)
+        ocr_lines, _, _ = await asyncio.to_thread(self.scanner.run_stage2_3_ocr, image)
 
         # Stage 3/5 Progress
         await self.edit_text(
             session,
             chat_id,
             progress_msg_id,
-            f"⏳ <b>[ধাপ ৩/৫]</b> {len(ocr_lines)}টি টেক্সট লাইন পাওয়া গেছে। <b>RapidFuzz + ১৭,১৯১টি ওষুধের ডাটাবেস</b> ম্যাচিং চলছে...\n"
+            f"⏳ <b>[ধাপ ৩/৫]</b> {len(ocr_lines)}টি টেক্সট লাইন পাওয়া গেছে। <b>YOLO+OCR ফিউশন ও ১৭,১৯১টি ওষুধের ডাটাবেস</b> ম্যাচিং চলছে...\n"
             "<code>[■■■■■■■□□□] 70%</code>",
         )
 
-        def _cluster_and_match():
-            clusters = self.scanner._cluster_ocr_lines_into_strips(ocr_lines, img_w=w, img_h=h)
-            results = []
-            for idx, (b_low, sc, meth, lns, bbox) in enumerate(clusters, start=1):
-                raw_text = "\n".join(line.text for line in lns)
-                res = self.scanner.matcher.match_strip_text(
-                    raw_text=raw_text,
-                    ocr_lines=lns,
-                    strip_index=idx,
-                    bbox=bbox,
-                    forced_brand_lower=b_low if b_low else None,
-                    forced_score=sc,
-                    forced_method=meth,
-                    slm_engine=self.scanner.slm,
-                )
-                results.append(res)
-            return results
-
-        strip_results = await asyncio.to_thread(_cluster_and_match)
+        strip_results, _, _, _ = await asyncio.to_thread(
+            self.scanner.run_stage4_fuse_and_match, image, detection, ocr_lines
+        )
 
         matched = [s for s in strip_results if s.matched_medicine is not None]
         if not matched:
@@ -424,6 +415,10 @@ class OushudhCheckTelegramBot:
                 f"   • <b>নির্দেশনা:</b> {_esc(dosage_bn)}\n"
                 f"   • <b>বাংলা সারসংক্ষেপ:</b> {_format_tg_summary(bangla_summary, indent='   ')}\n"
             )
+<<<<<<< HEAD
+=======
+            voice_parts.append(f"স্ট্রিপ {idx}: {bangla_summary}")
+>>>>>>> bdab9a43f44c711a1dc7d0452e9326bb4a0da795
 
         if alerts:
             lines_out.append("\n🚨 <b>সতর্কতা (Safety Alerts):</b>")
@@ -517,6 +512,49 @@ class OushudhCheckTelegramBot:
         )
         await self.handle_text_query(session, chat_id, transcribed, user_name, existing_msg_id=p_id)
 
+    def _split_multi_medicine_query(self, text: str) -> List[str]:
+        """
+        Splits multi-medicine user messages like:
+        - 'napa 500mg vs ace 500mg'
+        - 'napa 500mg ace 500mg'
+        - 'napa 500mg, seclo 20mg and ace'
+        - 'napa ও ace'
+        into separate per-medicine query chunks so ALL medicines are matched and checked for duplicates/interactions.
+        """
+        # 1. Split on explicit delimiters (vs, and, with, comma, semicolon, newline, Bangla connectors)
+        explicit_parts = re.split(
+            r"(?:[,;\n&/]+|\s+(?:vs\.?|versus|and|with|or|এবং|ও|সাথে|বনাম)\s+|\s+\+\s+(?=[A-Za-z]))",
+            text.strip(),
+            flags=re.IGNORECASE,
+        )
+        chunks: List[str] = []
+        for part in explicit_parts:
+            p = part.strip()
+            if not p:
+                continue
+            # 2. Split space-separated 'brand1 500mg brand2 500mg' right after a dosage unit followed by a letter
+            sub_parts = re.sub(
+                r"(\d\s*(?:mcg|mg|ml|iu|gm|g))\s+(?=[A-Za-z])",
+                r"\1\n",
+                p,
+                flags=re.IGNORECASE,
+            ).splitlines()
+            for sp in sub_parts:
+                sp_clean = sp.strip()
+                if not sp_clean:
+                    continue
+                # 3. Handle bare space-separated brands like 'napa ace seclo' (when >=2 known brands appear)
+                words = sp_clean.split()
+                if len(words) >= 2 and not re.search(r"\d", sp_clean):
+                    known_brands = self.scanner.matcher._brands_by_lower
+                    if sp_clean.lower() not in known_brands:
+                        matched_tokens = [w for w in words if w.lower() in known_brands]
+                        if len(matched_tokens) >= 2:
+                            chunks.extend(matched_tokens)
+                            continue
+                chunks.append(sp_clean)
+        return chunks[:6] or [text.strip()]
+
     async def handle_text_query(
         self,
         session: aiohttp.ClientSession,
@@ -530,22 +568,35 @@ class OushudhCheckTelegramBot:
             existing_msg_id = await self.send_text(
                 session,
                 chat_id,
-                f"🔍 <code>{_esc(text)}</code> ওষুধের তথ্য খোঁজা হচ্ছে (<b>RapidFuzz + Safety SLM</b>)...",
+                f"🔍 <code>{_esc(text)}</code> ওষুধের তথ্য খোঁজা হচ্ছে (<b>RapidFuzz + Gemma 3 1B SLM</b>)...",
             )
 
-        res = await asyncio.to_thread(
-            self.scanner.matcher.match_strip_text,
-            text,
-            None,
-            1,
-            None,
-            None,
-            100.0,
-            "exact_brand",
-            self.scanner.slm,
-        )
-        m = res.matched_medicine
-        if not m:
+        query_chunks = self._split_multi_medicine_query(text)
+
+        def _match_all_queries():
+            matched_list = []
+            seen_keys = set()
+            for idx, q_part in enumerate(query_chunks, start=1):
+                res = self.scanner.matcher.match_strip_text(
+                    q_part,
+                    None,
+                    idx,
+                    None,
+                    None,
+                    100.0,
+                    "exact_brand",
+                    self.scanner.slm,
+                )
+                if res.matched_medicine is not None:
+                    key = (res.matched_medicine.brand_name.lower(), (res.extracted_strength or "").lower())
+                    if key not in seen_keys:
+                        seen_keys.add(key)
+                        res.strip_index = len(matched_list) + 1
+                        matched_list.append(res)
+            return matched_list
+
+        matched_results = await asyncio.to_thread(_match_all_queries)
+        if not matched_results:
             await self.edit_text(
                 session,
                 chat_id,
@@ -554,24 +605,89 @@ class OushudhCheckTelegramBot:
             )
             return
 
-        strength = res.extracted_strength or m.package_container or "Standard"
-        dosage_bn, bangla_summary, timing_tag = await asyncio.to_thread(
-            self.scanner.slm.build_schedule_and_guidance,
-            res,
-            False,
-            False,
-        )
-        reply = (
-            f"💊 <b>{_esc(m.brand_name)}</b> — <code>{_esc(strength)}</code> ({_esc(m.dosage_form or 'Tablet')})\n"
-            f"• <b>জেনেরিক:</b> {_esc(m.generic)}\n"
-            f"• <b>শ্রেণী:</b> {_esc(m.drug_class or 'N/A')}\n"
-            f"• <b>প্রস্তুতকারক:</b> {_esc(m.manufacturer or 'N/A')}\n"
-            f"• <b>খাওয়ার সময়সূচী:</b> <code>{_esc(timing_tag)}</code>\n"
-            f"• <b>নির্দেশনা:</b> {_esc(dosage_bn)}\n\n"
-            f"📖 <b>সহজ বাংলা সারসংক্ষেপ:</b>\n{_format_tg_summary(bangla_summary)}"
-        )
+        # Single-medicine reply
+        if len(matched_results) == 1:
+            res = matched_results[0]
+            m = res.matched_medicine
+            assert m is not None
+            strength = res.extracted_strength or m.package_container or "Standard"
+            form = res.detected_dosage_form or m.dosage_form or "Tablet"
+            dosage_bn, bangla_summary, timing_tag = await asyncio.to_thread(
+                self.scanner.slm.build_schedule_and_guidance,
+                res,
+                False,
+                False,
+            )
+            reply = (
+                f"💊 <b>{_esc(m.brand_name)}</b> — <code>{_esc(strength)}</code> ({_esc(form)})\n"
+                f"• <b>জেনেরিক:</b> {_esc(m.generic)}\n"
+                f"• <b>শ্রেণী:</b> {_esc(m.drug_class or 'N/A')}\n"
+                f"• <b>প্রস্তুতকারক:</b> {_esc(m.manufacturer or 'N/A')}\n"
+                f"• <b>খাওয়ার সময়সূচী:</b> <code>{_esc(timing_tag)}</code>\n"
+                f"• <b>নির্দেশনা:</b> {_esc(dosage_bn)}\n\n"
+                f"📖 <b>সহজ বাংলা সারসংক্ষেপ:</b>\n{_format_tg_summary(bangla_summary)}"
+            )
+            await self.delete_message(session, chat_id, existing_msg_id)
+            for chunk in _chunk_html_blocks(reply.split("\n\n")):
+                await self.send_text(session, chat_id, chunk)
+
+            voice_status_id = await self.send_text(
+                session,
+                chat_id,
+                "🔊 <i>বাংলা ভয়েস অডিও তৈরি হচ্ছে... (Generating Bangla Voice...)</i>",
+            )
+            await self.send_chat_action(session, chat_id, "record_voice")
+            audio_path = await synthesize_bangla_speech(bangla_summary)
+            if audio_path and audio_path.exists():
+                await self.send_voice_mp3(session, chat_id, audio_path, caption=f"🔊 {m.brand_name} ({strength})")
+            await self.delete_message(session, chat_id, voice_status_id)
+            return
+
+        # Multi-medicine comparison & safety check reply (e.g., 'napa 500mg vs ace 500mg')
+        alerts, _, _ = evaluate_multi_strip_safety(matched_results)
+        dup_ids = {sid for a in alerts if a.alert_type == "duplicate_generic" for sid in a.involved_strips}
+        inter_ids = {sid for a in alerts if a.alert_type != "duplicate_generic" for sid in a.involved_strips}
+
+        def _build_multi_guidance():
+            return [
+                self.scanner.slm.build_schedule_and_guidance(
+                    r,
+                    is_duplicate=(r.strip_index in dup_ids),
+                    is_interaction=(r.strip_index in inter_ids),
+                )
+                for r in matched_results
+            ]
+
+        guidance_list = await asyncio.to_thread(_build_multi_guidance)
+        lines_out = [f"💊 <b>OushudhCheck তুলনা ও নিরাপত্তা যাচাই</b> (<i>{len(matched_results)}টি ওষুধ</i>)\n"]
+        voice_parts = [f"আপনার প্রশ্নে {len(matched_results)}টি ওষুধ পাওয়া গেছে।"]
+
+        for idx, (r, (dosage_bn, bangla_summary, timing_tag)) in enumerate(zip(matched_results, guidance_list), start=1):
+            m = r.matched_medicine
+            assert m is not None
+            strength = r.extracted_strength or m.package_container or "Standard"
+            form = r.detected_dosage_form or m.dosage_form or "Tablet"
+            lines_out.append(
+                f"<b>{idx}. {_esc(m.brand_name)}</b> — <code>{_esc(strength)}</code> ({_esc(form)})\n"
+                f"   • <b>জেনেরিক:</b> {_esc(m.generic)}\n"
+                f"   • <b>প্রস্তুতকারক:</b> {_esc(m.manufacturer or 'N/A')}\n"
+                f"   • <b>খাওয়ার সময়সূচী:</b> <code>{_esc(timing_tag)}</code>\n"
+                f"   • <b>নির্দেশনা:</b> {_esc(dosage_bn)}\n"
+                f"   • <b>বাংলা সারসংক্ষেপ:</b> {_format_tg_summary(bangla_summary, indent='   ')}\n"
+            )
+            voice_parts.append(f"ওষুধ {idx}: {bangla_summary}")
+
+        if alerts:
+            lines_out.append("\n🚨 <b>সতর্কতা (Safety Alerts):</b>")
+            for a in alerts:
+                lines_out.append(f"• ⚠️ <b>{_esc(a.message_bn)}</b>")
+                voice_parts.append(a.message_bn)
+        else:
+            lines_out.append("✅ <b>নিরাপত্তা যাচাই:</b> এই ওষুধগুলোতে কোনো ডুপ্লিকেট জেনেরিক বা ঝুঁকিপূর্ণ আন্তঃক্রিয়া পাওয়া যায়নি।")
+            voice_parts.append("এই ওষুধগুলোতে কোনো ডুপ্লিকেট উপাদান বা ঝুঁকিপূর্ণ আন্তঃক্রিয়া পাওয়া যায়নি।")
+
         await self.delete_message(session, chat_id, existing_msg_id)
-        for chunk in _chunk_html_blocks(reply.split("\n\n")):
+        for chunk in _chunk_html_blocks(lines_out):
             await self.send_text(session, chat_id, chunk)
 
         voice_status_id = await self.send_text(
@@ -580,13 +696,15 @@ class OushudhCheckTelegramBot:
             "🔊 <i>বাংলা ভয়েস অডিও তৈরি হচ্ছে... (Generating Bangla Voice...)</i>",
         )
         await self.send_chat_action(session, chat_id, "record_voice")
+<<<<<<< HEAD
         voice_text = (bangla_summary or "").strip() or dosage_bn
         audio_path = await synthesize_bangla_speech(voice_text)
+=======
+        audio_path = await synthesize_bangla_speech(" ".join(voice_parts))
+>>>>>>> bdab9a43f44c711a1dc7d0452e9326bb4a0da795
         if audio_path and audio_path.exists():
-            await self.send_voice_mp3(session, chat_id, audio_path, caption=f"🔊 {m.brand_name} ({strength})")
-            await self.delete_message(session, chat_id, voice_status_id)
-        else:
-            await self.delete_message(session, chat_id, voice_status_id)
+            await self.send_voice_mp3(session, chat_id, audio_path, caption="🔊 বাংলা ভয়েস গাইড (OushudhCheck AI)")
+        await self.delete_message(session, chat_id, voice_status_id)
 
     async def poll_forever(self) -> None:
         timeout = aiohttp.ClientTimeout(total=60)

@@ -424,7 +424,17 @@ def extract_from_multiple_strip_texts(payload: MultiTextExtractRequest) -> Multi
     return scanner.scan_texts(payload.strip_texts)
 
 
+<<<<<<< HEAD
 def _tts_file_response(audio_path) -> FileResponse:
+=======
+@router.get("/tts")
+async def get_bangla_tts_audio(
+    text: str = Query(..., min_length=1, max_length=3500, description="Bangla text to synthesize into speech"),
+):
+    audio_path = await synthesize_bangla_speech(text)
+    if not audio_path or not audio_path.exists():
+        raise HTTPException(status_code=500, detail="Bangla TTS synthesis failed.")
+>>>>>>> bdab9a43f44c711a1dc7d0452e9326bb4a0da795
     return FileResponse(
         path=str(audio_path),
         media_type="audio/mpeg",
@@ -570,6 +580,7 @@ async def _assemble_scan_response(
         guidance_list = await _build_guidance_parallel(scanner, matched_strips, dup_strip_ids, inter_strip_ids)
         slm_ms += int((time.perf_counter() - t_slm_extra) * 1000)
 
+<<<<<<< HEAD
     t_voice = time.perf_counter()
     full_voice_script = build_scan_bangla_voice_script(
         matched_strips=matched_strips,
@@ -588,6 +599,30 @@ async def _assemble_scan_response(
         voice_ms = max(8, int((time.perf_counter() - t_voice) * 1000))
     else:
         # Voice synthesis runs asynchronously on the client via /api/v1/tts/clip/{audio_id} or POST /api/v1/tts
+=======
+    # Build Bangla voice script AFTER LLM guidance so voice speaks the actual Gemma 3 1B summaries + alerts
+    t_voice = time.perf_counter()
+    from urllib.parse import quote
+
+    if matched_strips:
+        concise_voice_parts = [f"আপনার ছবিতে {len(matched_strips)}টি ওষুধের পাতা শনাক্ত করা হয়েছে।"]
+        for idx, (_s, (_dosage_bn, b_summary, _timing)) in enumerate(zip(matched_strips, guidance_list), start=1):
+            concise_voice_parts.append(f"ওষুধ {idx}: {b_summary}")
+        for a in scan_resp.safety_alerts:
+            concise_voice_parts.append(a.message_bn)
+        if not scan_resp.safety_alerts:
+            concise_voice_parts.append("ওষুধগুলোতে কোনো ডুপ্লিকেট বা ঝুঁকিপূর্ণ আন্তঃক্রিয়া পাওয়া যায়নি।")
+        concise_voice_script = " ".join(concise_voice_parts)
+        audio_url: Optional[str] = f"/api/v1/tts?text={quote(concise_voice_script[:3200])}"
+    else:
+        concise_voice_script = scan_resp.summary_bn
+        audio_url = None
+
+    if wait_for_voice and matched_strips:
+        await synthesize_bangla_speech(concise_voice_script)
+        voice_ms = max(8, int((time.perf_counter() - t_voice) * 1000))
+    else:
+>>>>>>> bdab9a43f44c711a1dc7d0452e9326bb4a0da795
         voice_ms = 0
 
     total_ms = yolo_ms + prep_ms + ocr_ms + fuzz_ms + slm_ms + voice_ms
@@ -614,19 +649,25 @@ async def _assemble_scan_response(
         ocr_confs = [ln.confidence for ln in s.ocr_lines] if s.ocr_lines else [0.96]
         avg_ocr_conf = round(float(sum(ocr_confs) / len(ocr_confs)), 3)
         conf_pct = round(avg_ocr_conf * 100.0, 1)
+        det_source = s.detection_source or "ocr_fallback"
+        yolo_conf_pct = round(s.yolo_confidence * 100.0, 1) if s.yolo_confidence is not None else None
+        source_prefix = "YOLO26s" if det_source.startswith("yolo26") else "RapidOCR"
 
         thumbs = strip_thumbs.get(s.strip_index, {"cropThumbnail": "", "preprocessedThumbnail": ""})
 
         detected_strips_ui.append(
             {
                 "id": f"strip-{idx}",
-                "label": f"YOLO26+PP-OCRv6 #{idx:02d} • {conf_pct:.1f}%",
+                "label": f"{source_prefix} #{idx:02d} • {(yolo_conf_pct if yolo_conf_pct is not None else conf_pct):.1f}%",
                 "brandName": med.brand_name,
                 "genericName": med.generic,
                 "strength": strength_display,
                 "dosageForm": s.detected_dosage_form or med.dosage_form or "Tablet",
                 "manufacturer": med.manufacturer or "Bangladesh Pharma",
-                "confidence": avg_ocr_conf,
+                "confidence": s.yolo_confidence if s.yolo_confidence is not None else avg_ocr_conf,
+                "ocrConfidence": avg_ocr_conf,
+                "yoloConfidence": s.yolo_confidence,
+                "detectionSource": det_source,
                 "x": x_pct,
                 "y": y_pct,
                 "width": w_pct,
@@ -670,6 +711,8 @@ async def _assemble_scan_response(
                 "fuzzyMatchScore": s.match_score,
                 "matchMethod": s.match_method or "exact_brand",
                 "confidencePct": conf_pct,
+                "yoloConfidencePct": yolo_conf_pct,
+                "detectionSource": det_source,
                 "bboxCoords": {
                     "x1": b.x1 if b else 0,
                     "y1": b.y1 if b else 0,
@@ -717,18 +760,22 @@ async def _assemble_scan_response(
 
     safety_edges = _build_safety_edges(matched_strips, scan_resp.safety_alerts)
 
+    det_info = scan_resp.detector_info or scanner.detector.get_model_info()
+    active_detector_label = det_info.get("modelLabel") or scanner.detector.model_label
+
     transparency_inspector = {
         "sourceLabel": source_label,
         "totalTurnaroundMs": total_ms,
         "wallClockMs": wall_ms,
-        "activeDetector": "YOLO26n ONNX (CPUExecutionProvider)",
+        "activeDetector": active_detector_label,
+        "detectorInfo": det_info,
         "activeOcrEngine": "PaddleOCR PP-OCRv6 (RapidOCR ONNX)",
         "activeReasoningMode": get_active_slm_label(),
         "stages": [
             {
                 "id": "object_detection",
                 "label": "Object Detection",
-                "engine": "YOLO26n ONNX (yolo_strips.onnx)",
+                "engine": f"{active_detector_label} ({det_info.get('effectiveMode', 'hybrid_fusion')})",
                 "durationMs": yolo_ms,
                 "color": "#0ea86b",
             },
@@ -797,6 +844,8 @@ async def _execute_full_scan_pipeline(
     image: np.ndarray,
     source_label: str = "upload",
     wait_for_voice: bool = False,
+    detector_mode: Optional[str] = None,
+    yolo_conf: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Runs the complete AI pipeline on an OpenCV image, measuring exact per-stage execution
@@ -804,7 +853,12 @@ async def _execute_full_scan_pipeline(
     """
     t0 = time.perf_counter()
     scanner = await run_in_threadpool(get_scanner)
-    scan_resp, st_times = await run_in_threadpool(scanner.scan_image_with_timings, image)
+    scan_resp, st_times = await run_in_threadpool(
+        scanner.scan_image_with_timings,
+        image,
+        detector_mode,
+        yolo_conf,
+    )
     return await _assemble_scan_response(
         image=image,
         scan_resp=scan_resp,
@@ -841,16 +895,29 @@ async def _read_and_validate_upload(file: UploadFile) -> np.ndarray:
 
 
 @router.post("/scan")
-async def scan_medicine_strips(file: UploadFile = File(...)):
+async def scan_medicine_strips(
+    file: UploadFile = File(...),
+    detector_mode: Optional[str] = Query(None, description="Optional override: hybrid_fusion | yolo_only | ocr_only"),
+    yolo_conf: Optional[float] = Query(None, ge=0.05, le=0.95, description="Optional YOLO confidence threshold override"),
+):
     image = await _read_and_validate_upload(file)
-    return await _execute_full_scan_pipeline(image, source_label=file.filename or "Uploaded Image")
+    return await _execute_full_scan_pipeline(
+        image,
+        source_label=file.filename or "Uploaded Image",
+        detector_mode=detector_mode,
+        yolo_conf=yolo_conf,
+    )
 
 
 @router.post("/scan-stream")
-async def scan_medicine_strips_stream(file: UploadFile = File(...)):
+async def scan_medicine_strips_stream(
+    file: UploadFile = File(...),
+    detector_mode: Optional[str] = Query(None, description="Optional override: hybrid_fusion | yolo_only | ocr_only"),
+    yolo_conf: Optional[float] = Query(None, ge=0.05, le=0.95, description="Optional YOLO confidence threshold override"),
+):
     """
-    Streams real-time NDJSON progress events as each AI pipeline stage executes on the backend,
-    followed by the final scan result payload.
+    Streams real-time NDJSON progress events as each AI pipeline stage executes on the backend
+    via the unified MedicineStripScanner pipeline, followed by the final scan result payload.
     """
     image = await _read_and_validate_upload(file)
     source_label = file.filename or "Uploaded Image"
@@ -858,54 +925,32 @@ async def scan_medicine_strips_stream(file: UploadFile = File(...)):
     async def event_generator():
         try:
             t0 = time.perf_counter()
-            h, w = image.shape[:2]
             scanner = await run_in_threadpool(get_scanner)
 
-            # Stage 1 (index 0): Strip Localization Prep
+            # Stage 1 (index 0): Real YOLO26 ONNX Strip Detection
             yield json.dumps({"type": "stage", "stageIndex": 0, "status": "running"}) + "\n"
-            yolo_ms = 2
+            detection, yolo_ms = await run_in_threadpool(
+                scanner.run_stage1_detect, image, detector_mode, yolo_conf
+            )
             yield json.dumps({"type": "stage", "stageIndex": 0, "status": "done", "durationMs": yolo_ms}) + "\n"
 
-            # Stage 2 & 3: Lazy LAB-CLAHE Preprocessing + PP-OCRv6 Multi-Orientation Text Extraction
+            # Stage 2 & 3 (index 1 & 2): Single-Pass RapidOCR (lazy LAB-CLAHE if 0 lines)
             yield json.dumps({"type": "stage", "stageIndex": 1, "status": "running"}) + "\n"
-            prep_ms = 0
-            yield json.dumps({"type": "stage", "stageIndex": 1, "status": "done", "durationMs": prep_ms}) + "\n"
-
             yield json.dumps({"type": "stage", "stageIndex": 2, "status": "running"}) + "\n"
-            t_ocr = time.perf_counter()
-            ocr_lines = await run_in_threadpool(scanner.ocr_engine.extract_lines, image, True)
-            if not ocr_lines:
-                t_prep = time.perf_counter()
-                enhanced_full = await run_in_threadpool(scanner.detector.preprocess_for_ocr, image)
-                prep_ms = max(4, int((time.perf_counter() - t_prep) * 1000))
-                ocr_lines = await run_in_threadpool(scanner.ocr_engine.extract_lines, enhanced_full, True)
-            ocr_ms = max(12, int((time.perf_counter() - t_ocr) * 1000))
+            ocr_lines, prep_ms, ocr_ms = await run_in_threadpool(scanner.run_stage2_3_ocr, image)
+            yield json.dumps({"type": "stage", "stageIndex": 1, "status": "done", "durationMs": prep_ms}) + "\n"
             yield json.dumps({"type": "stage", "stageIndex": 2, "status": "done", "durationMs": ocr_ms}) + "\n"
 
-            # Stage 4 (index 3): RapidFuzz + SQLite 17,191 BD Medicine Matching
+            # Stage 4 (index 3): YOLO Spatial Partitioning + Selective Crop Rescue + Free Residual Fallback + 17K+ Matching
             yield json.dumps({"type": "stage", "stageIndex": 3, "status": "running"}) + "\n"
-            t_fuzz = time.perf_counter()
-
-            def _cluster_and_match() -> List[StripScanResult]:
-                clusters = scanner._cluster_ocr_lines_into_strips(ocr_lines, img_w=w, img_h=h)
-                results: List[StripScanResult] = []
-                for idx, (b_low, sc, meth, lns, bbox) in enumerate(clusters, start=1):
-                    raw_text = "\n".join(line.text for line in lns)
-                    res = scanner.matcher.match_strip_text(
-                        raw_text=raw_text,
-                        ocr_lines=lns,
-                        strip_index=idx,
-                        bbox=bbox,
-                        forced_brand_lower=b_low if b_low else None,
-                        forced_score=sc,
-                        forced_method=meth,
-                        slm_engine=scanner.slm,
-                    )
-                    results.append(res)
-                return results
-
-            strip_results = await run_in_threadpool(_cluster_and_match)
-            fuzz_ms = max(3, int((time.perf_counter() - t_fuzz) * 1000))
+            strip_results, fuzz_ms, rescue_prep_ms, fusion_stats = await run_in_threadpool(
+                scanner.run_stage4_fuse_and_match,
+                image,
+                detection,
+                ocr_lines,
+                detector_mode,
+            )
+            prep_ms += rescue_prep_ms
             yield json.dumps({"type": "stage", "stageIndex": 3, "status": "done", "durationMs": fuzz_ms}) + "\n"
 
             # Stage 5 (index 4): Safety SLM Bangla Summary (Gemma 3 1B parallel) & Pairwise Conflict Graph
@@ -926,12 +971,21 @@ async def scan_medicine_strips_stream(file: UploadFile = File(...)):
             slm_ms = max(3, int((time.perf_counter() - t_slm) * 1000))
             yield json.dumps({"type": "stage", "stageIndex": 4, "status": "done", "durationMs": slm_ms}) + "\n"
 
+            base_info = scanner.detector.get_model_info()
+            detector_info = {
+                **base_info,
+                "activeBackend": detection.backend,
+                "requestedMode": (detector_mode or base_info["defaultPipelineMode"]).strip().lower(),
+                "confThresholdUsed": yolo_conf if yolo_conf is not None else base_info["defaultConfThreshold"],
+                **fusion_stats,
+            }
             scan_resp = MultiStripScanResponse(
                 total_strips_detected=len(strip_results),
                 strips=strip_results,
                 safety_alerts=alerts,
                 summary_en=summary_en,
                 summary_bn=summary_bn,
+                detector_info=detector_info,
             )
             st_times = {
                 "objectDetectionMs": yolo_ms,

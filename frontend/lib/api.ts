@@ -114,9 +114,15 @@ export interface ScanStageProgressEvent {
  * as each AI stage actually starts and completes, then resolves with the final ScanAnalysisResult.
  * Falls back to `POST /api/v1/scan` if streaming is unavailable.
  */
+export interface ScanDetectorOptions {
+  detectorMode?: "hybrid_fusion" | "yolo_only" | "ocr_only";
+  yoloConf?: number;
+}
+
 export async function analyzeMedicineImageStream(
   fileOrBlob: File | Blob,
-  onProgress?: (event: ScanStageProgressEvent) => void
+  onProgress?: (event: ScanStageProgressEvent) => void,
+  options?: ScanDetectorOptions
 ): Promise<{ data: ScanAnalysisResult; isLiveBackend: boolean }> {
   const formData = new FormData();
   const fileName =
@@ -125,11 +131,18 @@ export async function analyzeMedicineImageStream(
       : "tabletop_strips.jpg";
   formData.append("file", fileOrBlob, fileName);
 
+  const params = new URLSearchParams();
+  if (options?.detectorMode) params.set("detector_mode", options.detectorMode);
+  if (typeof options?.yoloConf === "number") {
+    params.set("yolo_conf", options.yoloConf.toFixed(2));
+  }
+  const qs = params.toString() ? `?${params.toString()}` : "";
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 60000);
 
   try {
-    const response = await fetch(`${API_BASE_URL}/scan-stream`, {
+    const response = await fetch(`${API_BASE_URL}/scan-stream${qs}`, {
       method: "POST",
       body: formData,
       signal: controller.signal,
@@ -180,6 +193,8 @@ export async function analyzeMedicineImageStream(
             durationMs:
               typeof msg.durationMs === "number" ? msg.durationMs : undefined,
           });
+        } else if (msg.type === "error") {
+          throw new Error(String(msg.detail || "Backend scan pipeline failed."));
         } else if (msg.type === "result" && msg.data) {
           finalResult = msg.data as ScanAnalysisResult;
         }
@@ -188,6 +203,9 @@ export async function analyzeMedicineImageStream(
 
     if (buffer.trim()) {
       const msg = JSON.parse(buffer.trim());
+      if (msg.type === "error") {
+        throw new Error(String(msg.detail || "Backend scan pipeline failed."));
+      }
       if (msg.type === "result" && msg.data) {
         finalResult = msg.data as ScanAnalysisResult;
       }

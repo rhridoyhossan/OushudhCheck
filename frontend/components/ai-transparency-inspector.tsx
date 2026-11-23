@@ -468,7 +468,9 @@ export function AITransparencyInspector({
                 <div className="grid grid-cols-2 gap-2.5">
                   <div className="rounded-2xl bg-white p-2 border border-teal-100 space-y-1">
                     <span className="block text-[10px] font-bold text-[#46737a] uppercase tracking-wider">
-                      1. Raw Detector Crop
+                      {ev.detectionSource?.startsWith("yolo26")
+                        ? "1. YOLO26 Strip Crop"
+                        : "1. RapidOCR Cluster Crop"}
                     </span>
                     {ev.cropThumbnail ? (
                       // eslint-disable-next-line @next/next/no-img-element
@@ -503,8 +505,19 @@ export function AITransparencyInspector({
                   </div>
                 </div>
 
-                {/* Telemetry Metrics Pills: Fuzzy Score, OCR Confidence %, BBox Coordinates */}
-                <div className="grid grid-cols-3 gap-2 text-center">
+                {/* Telemetry Metrics Pills: Provenance/YOLO Conf, Fuzzy Score, OCR Confidence %, BBox Coordinates */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
+                  <div className="rounded-xl bg-white p-2 border border-teal-100">
+                    <span className="block text-[10px] text-[#46737a] font-semibold">
+                      Detector Source
+                    </span>
+                    <span className="font-mono text-[11px] font-extrabold text-[#0b5563]">
+                      {ev.yoloConfidencePct != null
+                        ? `YOLO26 ${ev.yoloConfidencePct.toFixed(0)}%`
+                        : "OCR Fallback"}
+                    </span>
+                  </div>
+
                   <div className="rounded-xl bg-white p-2 border border-teal-100">
                     <span className="block text-[10px] text-[#46737a] font-semibold">
                       Fuzzy Match

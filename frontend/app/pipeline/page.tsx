@@ -118,6 +118,11 @@ export default function PipelineInspectorPage() {
   const [isPlayingVoice, setIsPlayingVoice] = useState<boolean>(false);
   const [activeMedicine, setActiveMedicine] =
     useState<MedicineDatabaseRecord | null>(null);
+  const [detectorMode, setDetectorMode] = useState<
+    "hybrid_fusion" | "yolo_only" | "ocr_only"
+  >("hybrid_fusion");
+  const [yoloConf, setYoloConf] = useState<number>(0.22);
+  const [showBoxes, setShowBoxes] = useState<boolean>(true);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -289,7 +294,8 @@ export default function PipelineInspectorPage() {
               return next;
             });
           }
-        }
+        },
+        { detectorMode, yoloConf }
       );
       setReadyAudioBlobUrl(null);
       setIsPlayingVoice(false);
@@ -330,7 +336,7 @@ export default function PipelineInspectorPage() {
       clearInterval(stageTimer);
       setIsRunning(false);
     }
-  }, []);
+  }, [detectorMode, yoloConf]);
 
   const acceptFile = (file: File | undefined | null) => {
     if (!file) return;
@@ -542,12 +548,46 @@ export default function PipelineInspectorPage() {
                       : "border-teal-100 hover:border-[#0ea86b]/60"
                   }`}
                 >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={uploadedPreviewUrl}
-                    alt={uploadedFile?.name || "Uploaded medicine strips"}
-                    className="w-full h-full object-contain"
-                  />
+                  <div className="relative w-full h-full flex items-center justify-center p-2">
+                    <div className="relative inline-block max-w-full max-h-full">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={uploadedPreviewUrl}
+                        alt={uploadedFile?.name || "Uploaded medicine strips"}
+                        className="block max-w-full max-h-[300px] w-auto h-auto rounded-2xl"
+                      />
+                      {showBoxes &&
+                        analysis?.detectedStrips.map((strip, idx) => {
+                          const isYolo = Boolean(
+                            strip.detectionSource?.startsWith("yolo26")
+                          );
+                          return (
+                            <div
+                              key={strip.id}
+                              style={{
+                                left: `${strip.x}%`,
+                                top: `${strip.y}%`,
+                                width: `${strip.width}%`,
+                                height: `${strip.height}%`,
+                              }}
+                              className={`pointer-events-none absolute rounded-lg border-2 ${
+                                isYolo
+                                  ? "border-[#0ea86b] bg-[#0ea86b]/10"
+                                  : "border-dashed border-amber-400 bg-amber-400/10"
+                              }`}
+                            >
+                              <span
+                                className={`absolute -top-5 left-0 whitespace-nowrap rounded px-1.5 py-0.5 text-[9px] font-bold text-white shadow ${
+                                  isYolo ? "bg-[#0ea86b]" : "bg-amber-600"
+                                }`}
+                              >
+                                #{idx + 1} {strip.brandName}
+                              </span>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  </div>
                   <div className="absolute bottom-3 left-3 right-3 rounded-2xl bg-[#09353c]/85 backdrop-blur-md text-white px-3.5 py-2 text-xs flex items-center justify-between">
                     <span className="font-bold truncate">
                       {uploadedFile?.name}
@@ -586,6 +626,57 @@ export default function PipelineInspectorPage() {
                   </p>
                 </div>
               )}
+
+              {/* Compact Live Detector Controls (Mode & Confidence Override) */}
+              <div className="rounded-2xl border border-teal-100 bg-[#f2f9f8]/90 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-1.5">
+                  <span className="font-bold text-[#09353c]">Detector:</span>
+                  {(["hybrid_fusion", "yolo_only", "ocr_only"] as const).map(
+                    (m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        disabled={isRunning}
+                        onClick={() => setDetectorMode(m)}
+                        className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold transition cursor-pointer ${
+                          detectorMode === m
+                            ? "bg-[#09353c] text-white"
+                            : "bg-white text-[#46737a] border border-teal-100 hover:border-[#0ea86b]"
+                        }`}
+                      >
+                        {m === "hybrid_fusion"
+                          ? "Hybrid"
+                          : m === "yolo_only"
+                          ? "YOLO Only"
+                          : "OCR Only"}
+                      </button>
+                    )
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2.5">
+                  <label className="flex items-center gap-1.5 text-[11px] font-mono text-[#0b5563]">
+                    <span>conf≥{yoloConf.toFixed(2)}</span>
+                    <input
+                      type="range"
+                      min={0.1}
+                      max={0.85}
+                      step={0.05}
+                      value={yoloConf}
+                      disabled={isRunning}
+                      onChange={(e) => setYoloConf(Number(e.target.value))}
+                      className="w-16 accent-[#0ea86b]"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setShowBoxes((v) => !v)}
+                    className="rounded-full bg-white px-2 py-0.5 text-[10px] font-bold text-[#0b5563] border border-teal-100 hover:border-[#0ea86b] cursor-pointer"
+                  >
+                    {showBoxes ? "Hide Boxes" : "Show Boxes"}
+                  </button>
+                </div>
+              </div>
 
               <button
                 type="button"
