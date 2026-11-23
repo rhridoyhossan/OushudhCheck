@@ -97,11 +97,8 @@ export function HealthcareShowcaseCard() {
               YOLO26 Scanner
             </Link>
             <Link href="/database" className="hover:text-[#09353c] transition">
-              21K+ BD Drugs
+              17K+ BD Drugs
             </Link>
-            <a href="#services" className="hover:text-[#09353c] transition">
-              Bangla TTS
-            </a>
           </div>
 
           {/* Inner Top-Right Emerald Pill CTA */}
