@@ -18,6 +18,11 @@ export function BanglaVoiceWaveform({
 }: BanglaVoiceWaveformProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const wsRef = useRef<WaveSurfer | null>(null);
+  const onSeekRef = useRef(onSeek);
+
+  useEffect(() => {
+    onSeekRef.current = onSeek;
+  }, [onSeek]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -40,7 +45,7 @@ export function BanglaVoiceWaveform({
     });
 
     const onInteraction = (newTime: number) => {
-      onSeek?.(newTime);
+      onSeekRef.current?.(newTime);
     };
     ws.on("interaction", onInteraction);
 
@@ -50,7 +55,7 @@ export function BanglaVoiceWaveform({
       ws.destroy();
       wsRef.current = null;
     };
-  }, [audioUrl, audioElement, onSeek]);
+  }, [audioUrl, audioElement]);
 
   if (isLoading || !audioUrl) {
     return (

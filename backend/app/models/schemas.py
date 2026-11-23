@@ -117,3 +117,12 @@ class MultiTextExtractRequest(BaseModel):
         ...,
         description="List of raw OCR texts from multiple medicine strips to extract and check for duplicates/interactions",
     )
+
+
+class TTSRequest(BaseModel):
+    text: str = Field(
+        ...,
+        min_length=1,
+        max_length=6000,
+        description="Bangla text to synthesize into neural speech (.mp3)",
+    )

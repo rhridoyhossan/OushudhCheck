@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useRef } from "react";
+import React, { useId, useRef } from "react";
 import { useParallaxZoom } from "@/components/scroll-reveal";
 import {
   ThumbsUp,
@@ -21,6 +21,9 @@ import {
 export function ServicesGrid() {
   const sectionRef = useRef<HTMLElement | null>(null);
   useParallaxZoom(sectionRef, "[data-reveal='scale']");
+
+  // Stable, collision-free ID for the SVG gradient
+  const waveGradientId = useId().replace(/:/g, "");
 
   return (
     <section
@@ -48,7 +51,7 @@ export function ServicesGrid() {
         {/* Section Header */}
         <div className="relative z-10 text-center mb-10">
           <span className="inline-flex items-center gap-1.5 rounded-full bg-[#0ea86b]/10 text-[#0b5563] border border-[#0ea86b]/30 px-4 py-1 text-xs font-bold tracking-wide shadow-2xs mb-2.5">
-            <Sparkles className="size-3.5 text-[#0ea86b]" />
+            <Sparkles className="size-3.5 text-[#0ea86b]" aria-hidden="true" />
             AI-Powered Healthcare Technology
           </span>
           <h2 className="text-2xl sm:text-4xl font-extrabold tracking-tight text-[#09353c]">
@@ -109,7 +112,7 @@ export function ServicesGrid() {
                 {/* Thumbs-Up Callout Pill */}
                 <div className="rounded-2xl bg-white p-3 shadow-[0_8px_25px_rgba(11,85,99,0.06)] border border-teal-50 flex items-center gap-3">
                   <div className="flex items-center justify-center size-8 rounded-full bg-emerald-50 text-[#0ea86b] shrink-0 shadow-inner">
-                    <ThumbsUp className="size-3.5 fill-[#0ea86b]" />
+                    <ThumbsUp className="size-3.5 fill-[#0ea86b]" aria-hidden="true" />
                   </div>
                   <p className="text-[11px] text-[#46737a] leading-snug">
                     Isolates <strong className="text-[#09353c]">98.4%</strong> of
@@ -133,15 +136,15 @@ export function ServicesGrid() {
                 </p>
                 <ul className="mt-3 space-y-1.5 text-[11px] font-semibold text-[#0b5563]">
                   <li className="flex items-center gap-2">
-                    <Check className="size-3.5 text-[#0ea86b] shrink-0" />
+                    <Check className="size-3.5 text-[#0ea86b] shrink-0" aria-hidden="true" />
                     <span>YOLO26-powered detection</span>
                   </li>
                   <li className="flex items-center gap-2">
-                    <Check className="size-3.5 text-[#0ea86b] shrink-0" />
+                    <Check className="size-3.5 text-[#0ea86b] shrink-0" aria-hidden="true" />
                     <span>Multi-strip scanning</span>
                   </li>
                   <li className="flex items-center gap-2">
-                    <Check className="size-3.5 text-[#0ea86b] shrink-0" />
+                    <Check className="size-3.5 text-[#0ea86b] shrink-0" aria-hidden="true" />
                     <span>OCR-based medicine identification</span>
                   </li>
                 </ul>
@@ -154,7 +157,7 @@ export function ServicesGrid() {
                 <div className="flex items-center gap-2.5">
                   <div className="flex-1 rounded-2xl bg-white p-3 shadow-[0_6px_20px_rgba(11,85,99,0.06)] border border-teal-50 flex items-center gap-2.5">
                     <div className="flex items-center justify-center size-8 rounded-full bg-rose-100 text-rose-600 shrink-0">
-                      <ShieldAlert className="size-4" />
+                      <ShieldAlert className="size-4" aria-hidden="true" />
                     </div>
                     <div className="min-w-0">
                       <p className="text-xs font-bold text-[#09353c] truncate">
@@ -169,7 +172,7 @@ export function ServicesGrid() {
 
                   <div className="rounded-2xl bg-[#f2f9f8] p-3 border border-teal-100/80 flex items-center gap-2 shrink-0">
                     <div className="flex items-center justify-center size-7 rounded-full bg-emerald-100 text-[#0ea86b]">
-                      <CheckCircle2 className="size-3.5" />
+                      <CheckCircle2 className="size-3.5" aria-hidden="true" />
                     </div>
                     <div>
                       <p className="text-[11px] font-bold text-[#09353c]">
@@ -197,15 +200,15 @@ export function ServicesGrid() {
                 </p>
                 <ul className="mt-3 space-y-1.5 text-[11px] font-semibold text-[#0b5563]">
                   <li className="flex items-center gap-2">
-                    <Check className="size-3.5 text-[#0ea86b] shrink-0" />
+                    <Check className="size-3.5 text-[#0ea86b] shrink-0" aria-hidden="true" />
                     <span>Brand-to-generic comparison</span>
                   </li>
                   <li className="flex items-center gap-2">
-                    <Check className="size-3.5 text-[#0ea86b] shrink-0" />
+                    <Check className="size-3.5 text-[#0ea86b] shrink-0" aria-hidden="true" />
                     <span>Duplicate ingredient alerts</span>
                   </li>
                   <li className="flex items-center gap-2">
-                    <Check className="size-3.5 text-[#0ea86b] shrink-0" />
+                    <Check className="size-3.5 text-[#0ea86b] shrink-0" aria-hidden="true" />
                     <span>Potential overdose warnings</span>
                   </li>
                 </ul>
@@ -225,7 +228,7 @@ export function ServicesGrid() {
                     BD Medicine Brands
                   </span>
                   <span className="text-base font-extrabold text-[#09353c]">
-                    21,000+
+                    17,000+
                   </span>
                 </div>
 
@@ -265,15 +268,15 @@ export function ServicesGrid() {
                 </p>
                 <ul className="mt-3 space-y-1.5 text-[11px] font-semibold text-[#0b5563]">
                   <li className="flex items-center gap-2">
-                    <Check className="size-3.5 text-[#0ea86b] shrink-0" />
+                    <Check className="size-3.5 text-[#0ea86b] shrink-0" aria-hidden="true" />
                     <span>21,000+ brand records</span>
                   </li>
                   <li className="flex items-center gap-2">
-                    <Check className="size-3.5 text-[#0ea86b] shrink-0" />
+                    <Check className="size-3.5 text-[#0ea86b] shrink-0" aria-hidden="true" />
                     <span>1,700+ generic ingredients</span>
                   </li>
                   <li className="flex items-center gap-2">
-                    <Check className="size-3.5 text-[#0ea86b] shrink-0" />
+                    <Check className="size-3.5 text-[#0ea86b] shrink-0" aria-hidden="true" />
                     <span>Intelligent text matching</span>
                   </li>
                 </ul>
@@ -326,10 +329,11 @@ export function ServicesGrid() {
                     <svg
                       viewBox="0 0 300 70"
                       className="w-full h-full overflow-visible"
+                      aria-hidden="true"
                     >
                       <defs>
                         <linearGradient
-                          id="waveFillTeal"
+                          id={waveGradientId}
                           x1="0"
                           y1="0"
                           x2="0"
@@ -349,7 +353,7 @@ export function ServicesGrid() {
                       </defs>
                       <path
                         d="M 0 60 Q 45 60, 75 45 T 155 15 T 230 45 T 300 35 L 300 70 L 0 70 Z"
-                        fill="url(#waveFillTeal)"
+                        fill={`url(#${waveGradientId})`}
                       />
                       <path
                         d="M 0 60 Q 45 60, 75 45 T 155 15 T 230 45 T 300 35"
@@ -379,15 +383,15 @@ export function ServicesGrid() {
                 </p>
                 <ul className="mt-3 space-y-1.5 text-[11px] font-semibold text-[#0b5563]">
                   <li className="flex items-center gap-2">
-                    <Check className="size-3.5 text-[#0ea86b] shrink-0" />
+                    <Check className="size-3.5 text-[#0ea86b] shrink-0" aria-hidden="true" />
                     <span>DrugBank-based interaction screening</span>
                   </li>
                   <li className="flex items-center gap-2">
-                    <Check className="size-3.5 text-[#0ea86b] shrink-0" />
+                    <Check className="size-3.5 text-[#0ea86b] shrink-0" aria-hidden="true" />
                     <span>Potential interaction alerts</span>
                   </li>
                   <li className="flex items-center gap-2">
-                    <Check className="size-3.5 text-[#0ea86b] shrink-0" />
+                    <Check className="size-3.5 text-[#0ea86b] shrink-0" aria-hidden="true" />
                     <span>Medicine safety insights</span>
                   </li>
                 </ul>
@@ -406,7 +410,7 @@ export function ServicesGrid() {
                 <div className="grid grid-cols-3 gap-2.5">
                   <div className="rounded-2xl bg-white p-2.5 shadow-[0_6px_18px_rgba(11,85,99,0.06)] border border-teal-50">
                     <div className="flex items-center justify-center size-6 rounded-full bg-[#f2f9f8] text-[#0b5563] mb-1.5">
-                      <Zap className="size-3" />
+                      <Zap className="size-3" aria-hidden="true" />
                     </div>
                     <p className="text-xs font-extrabold text-[#09353c]">
                       Gemma 3 1B
@@ -416,7 +420,7 @@ export function ServicesGrid() {
 
                   <div className="rounded-2xl bg-white p-2.5 shadow-[0_6px_18px_rgba(11,85,99,0.06)] border border-teal-50">
                     <div className="flex items-center justify-center size-6 rounded-full bg-[#f2f9f8] text-[#0ea86b] mb-1.5">
-                      <Volume2 className="size-3" />
+                      <Volume2 className="size-3" aria-hidden="true" />
                     </div>
                     <p className="text-xs font-extrabold text-[#09353c]">
                       bn-BD
@@ -426,7 +430,7 @@ export function ServicesGrid() {
 
                   <div className="rounded-2xl bg-white p-2.5 shadow-[0_6px_18px_rgba(11,85,99,0.06)] border border-teal-50">
                     <div className="flex items-center justify-center size-6 rounded-full bg-[#f2f9f8] text-[#0d9488] mb-1.5">
-                      <Play className="size-3 fill-current" />
+                      <Play className="size-3 fill-current" aria-hidden="true" />
                     </div>
                     <p className="text-xs font-extrabold text-[#09353c]">
                       Audio
@@ -440,7 +444,7 @@ export function ServicesGrid() {
                   <div className="size-28 rounded-full border border-teal-100 flex items-center justify-center">
                     <div className="size-20 rounded-full border border-emerald-200/80 bg-emerald-50/35 flex items-center justify-center">
                       <div className="size-13 rounded-full bg-white shadow-[0_10px_30px_rgba(14,168,107,0.28)] flex items-center justify-center">
-                        <Plus className="size-7 text-[#0ea86b] stroke-[3.5]" />
+                        <Plus className="size-7 text-[#0ea86b] stroke-[3.5]" aria-hidden="true" />
                       </div>
                     </div>
                   </div>
@@ -453,7 +457,7 @@ export function ServicesGrid() {
                       Bangla Voice Guidance
                     </p>
                     <span className="inline-block mt-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[10px] font-bold text-[#0ea86b]">
-                      বাংলায় সহজ ব্যাখ্যা
+                      বাংলায় সহজ ব্যাখ্যা
                     </span>
                   </div>
 
@@ -481,15 +485,15 @@ export function ServicesGrid() {
                 </p>
                 <ul className="mt-3 space-y-1.5 text-[11px] font-semibold text-[#0b5563]">
                   <li className="flex items-center gap-2">
-                    <Check className="size-3.5 text-[#0ea86b] shrink-0" />
+                    <Check className="size-3.5 text-[#0ea86b] shrink-0" aria-hidden="true" />
                     <span>Natural Bangla voice guidance</span>
                   </li>
                   <li className="flex items-center gap-2">
-                    <Check className="size-3.5 text-[#0ea86b] shrink-0" />
+                    <Check className="size-3.5 text-[#0ea86b] shrink-0" aria-hidden="true" />
                     <span>AI-powered explanations</span>
                   </li>
                   <li className="flex items-center gap-2">
-                    <Check className="size-3.5 text-[#0ea86b] shrink-0" />
+                    <Check className="size-3.5 text-[#0ea86b] shrink-0" aria-hidden="true" />
                     <span>Accessible for everyone</span>
                   </li>
                 </ul>
@@ -501,7 +505,7 @@ export function ServicesGrid() {
               <div className="relative h-32 flex items-center justify-center">
                 <div className="size-24 rounded-full border border-dashed border-teal-200 flex items-center justify-center">
                   <div className="relative size-14 rounded-full bg-white shadow-[0_8px_25px_rgba(14,168,107,0.22)] border border-emerald-100 flex items-center justify-center text-[#0ea86b]">
-                    <Bot className="size-6" />
+                    <Bot className="size-6" aria-hidden="true" />
                     <span className="absolute -top-1 -right-1 flex items-center justify-center size-4.5 rounded-full bg-[#0b5563] text-white text-[10px] font-bold shadow">
                       +
                     </span>
@@ -509,17 +513,17 @@ export function ServicesGrid() {
                 </div>
 
                 <div className="absolute left-1 top-3 -rotate-12 rounded-full bg-white px-2.5 py-1 shadow-md border border-teal-50 flex items-center gap-1 text-[10px] font-bold text-[#09353c]">
-                  <Mic className="size-3 text-[#0b5563]" />
+                  <Mic className="size-3 text-[#0b5563]" aria-hidden="true" />
                   <span>Voice Query</span>
                 </div>
 
                 <div className="absolute right-1 top-2 rotate-12 rounded-full bg-white px-2.5 py-1 shadow-md border border-teal-50 flex items-center gap-1 text-[10px] font-bold text-[#09353c]">
-                  <Pill className="size-3 text-[#0d9488]" />
+                  <Pill className="size-3 text-[#0d9488]" aria-hidden="true" />
                   <span>Strip Photo</span>
                 </div>
 
                 <div className="absolute right-2 bottom-1 -rotate-6 rounded-full bg-white px-2.5 py-1 shadow-md border border-teal-50 flex items-center gap-1 text-[10px] font-bold text-[#09353c]">
-                  <Volume2 className="size-3 text-[#0ea86b]" />
+                  <Volume2 className="size-3 text-[#0ea86b]" aria-hidden="true" />
                   <span>Bangla Reply</span>
                 </div>
               </div>
@@ -538,15 +542,15 @@ export function ServicesGrid() {
                 </p>
                 <ul className="mt-3 space-y-1.5 text-[11px] font-semibold text-[#0b5563]">
                   <li className="flex items-center gap-2">
-                    <Check className="size-3.5 text-[#0ea86b] shrink-0" />
+                    <Check className="size-3.5 text-[#0ea86b] shrink-0" aria-hidden="true" />
                     <span>Scan medicine photos</span>
                   </li>
                   <li className="flex items-center gap-2">
-                    <Check className="size-3.5 text-[#0ea86b] shrink-0" />
+                    <Check className="size-3.5 text-[#0ea86b] shrink-0" aria-hidden="true" />
                     <span>Ask questions using voice</span>
                   </li>
                   <li className="flex items-center gap-2">
-                    <Check className="size-3.5 text-[#0ea86b] shrink-0" />
+                    <Check className="size-3.5 text-[#0ea86b] shrink-0" aria-hidden="true" />
                     <span>Receive Bangla responses</span>
                   </li>
                 </ul>
@@ -575,15 +579,15 @@ export function ServicesGrid() {
               </p>
               <ul className="pt-2 grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs font-semibold text-[#0b5563]">
                 <li className="flex items-center gap-2 rounded-xl bg-[#f2f9f8] px-3 py-2 border border-teal-100/70">
-                  <Check className="size-3.5 text-[#0ea86b] shrink-0" />
+                  <Check className="size-3.5 text-[#0ea86b] shrink-0" aria-hidden="true" />
                   <span>Beginner-friendly explanations</span>
                 </li>
                 <li className="flex items-center gap-2 rounded-xl bg-[#f2f9f8] px-3 py-2 border border-teal-100/70">
-                  <Check className="size-3.5 text-[#0ea86b] shrink-0" />
+                  <Check className="size-3.5 text-[#0ea86b] shrink-0" aria-hidden="true" />
                   <span>Dosage information from verified sources</span>
                 </li>
                 <li className="flex items-center gap-2 rounded-xl bg-[#f2f9f8] px-3 py-2 border border-teal-100/70">
-                  <Check className="size-3.5 text-[#0ea86b] shrink-0" />
+                  <Check className="size-3.5 text-[#0ea86b] shrink-0" aria-hidden="true" />
                   <span>Side effects and safety precautions</span>
                 </li>
               </ul>
@@ -593,7 +597,7 @@ export function ServicesGrid() {
             <div className="lg:col-span-5 rounded-2xl bg-[#f2f9f8] p-5 border border-teal-100/80 space-y-3.5">
               <div className="flex items-center justify-between">
                 <span className="inline-flex items-center gap-1.5 text-xs font-bold text-[#09353c]">
-                  <BookOpen className="size-4 text-[#0ea86b]" />
+                  <BookOpen className="size-4 text-[#0ea86b]" aria-hidden="true" />
                   Plain-Language Summary
                 </span>
                 <span className="rounded-full bg-white px-2.5 py-0.5 text-[10px] font-bold text-[#0ea86b] border border-teal-100">

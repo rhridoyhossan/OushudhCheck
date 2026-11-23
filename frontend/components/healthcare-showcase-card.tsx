@@ -21,6 +21,9 @@ export function HealthcareShowcaseCard() {
   useParallaxZoom(containerRef);
 
   useEffect(() => {
+    // Respect users who prefer reduced motion
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
     const ctx = gsap.context(() => {
       const badges = gsap.utils.toArray<HTMLElement>(".floating-mini-badge");
       badges.forEach((badge, i) => {
@@ -51,13 +54,14 @@ export function HealthcareShowcaseCard() {
     >
       {/* Top Floating Circular Avatar / Badge Accents */}
       <div className="floating-mini-badge hidden sm:flex items-center justify-center size-11 rounded-full bg-white/90 backdrop-blur-md shadow-md border border-white absolute -top-1 left-1/4 z-20 text-[#0b5563] will-change-transform">
-        <Stethoscope className="size-4.5 text-[#0ea86b]" />
+        <Stethoscope className="size-4.5 text-[#0ea86b]" aria-hidden="true" />
       </div>
       <div className="floating-mini-badge hidden sm:flex items-center justify-center size-12 rounded-full bg-white/95 backdrop-blur-md shadow-md border-2 border-white absolute -top-2 right-1/4 z-20 overflow-hidden will-change-transform">
         <Image
           src="/logo.jpg"
           alt="OushudhCheck Badge"
           fill
+          sizes="48px"
           className="object-cover"
         />
       </div>
@@ -75,8 +79,9 @@ export function HealthcareShowcaseCard() {
             <div className="relative size-8 rounded-lg overflow-hidden bg-white shadow-xs border border-white shrink-0">
               <Image
                 src="/logo.jpg"
-                alt="OushudhCheck Logo"
+                alt=""
                 fill
+                sizes="32px"
                 className="object-cover"
               />
             </div>
@@ -89,25 +94,29 @@ export function HealthcareShowcaseCard() {
           <div className="flex items-center gap-6 text-xs font-semibold text-[#46737a]">
             <Link
               href="/"
-              className="text-[#09353c] font-extrabold underline decoration-[#0ea86b] decoration-2 underline-offset-4"
+              className="text-[#09353c] font-extrabold underline decoration-[#0ea86b] decoration-2 underline-offset-4 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0ea86b] focus-visible:ring-offset-2"
             >
               Overview
             </Link>
-            <Link href="/scan" className="hover:text-[#09353c] transition">
+            <Link
+              href="/scan"
+              className="hover:text-[#09353c] transition rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0ea86b] focus-visible:ring-offset-2"
+            >
               YOLO26 Scanner
             </Link>
-            <Link href="/database" className="hover:text-[#09353c] transition">
-              21K+ BD Drugs
+            <Link
+              href="/database"
+              className="hover:text-[#09353c] transition rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0ea86b] focus-visible:ring-offset-2"
+            >
+              17K+ BD Drugs
             </Link>
-            <a href="#services" className="hover:text-[#09353c] transition">
-              Bangla TTS
-            </a>
+        
           </div>
 
           {/* Inner Top-Right Emerald Pill CTA */}
           <Link
             href="/scan"
-            className="rounded-full bg-[#0ea86b] hover:bg-[#0b5563] text-white text-[11px] font-bold uppercase tracking-wider px-5 py-2 shadow-md shadow-[#0ea86b]/25 transition"
+            className="rounded-full bg-[#0ea86b] hover:bg-[#0b5563] text-white text-[11px] font-bold uppercase tracking-wider px-5 py-2 shadow-md shadow-[#0ea86b]/25 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0ea86b] focus-visible:ring-offset-2"
           >
             Try Scanner
           </Link>
@@ -115,7 +124,7 @@ export function HealthcareShowcaseCard() {
 
         {/* Floating Right Circular Icon inside Card */}
         <div className="floating-mini-badge hidden md:flex items-center justify-center size-11 rounded-full bg-white/80 backdrop-blur-md shadow-sm border border-white absolute top-24 right-12 z-20 text-[#0b5563] will-change-transform">
-          <Sparkles className="size-4 text-[#0ea86b]" />
+          <Sparkles className="size-4 text-[#0ea86b]" aria-hidden="true" />
         </div>
 
         {/* Center Giant Display Title: "Healthcare" */}
@@ -137,7 +146,7 @@ export function HealthcareShowcaseCard() {
               </p>
               <div className="flex items-center gap-1.5 mt-3">
                 <span className="size-2.5 rounded-full bg-[#0b5563]" />
-                <span className="size-2.5 rounded-full bg-[#0ea86b] animate-pulse" />
+                <span className="size-2.5 rounded-full bg-[#0ea86b] motion-safe:animate-pulse" />
                 <span className="text-[10px] font-bold text-[#0d9488] ml-1">
                   Verified!
                 </span>
@@ -150,7 +159,7 @@ export function HealthcareShowcaseCard() {
             {/* Deep Teal Connected Card */}
             <div className="rounded-2xl bg-[#0b5563] text-white p-4 shadow-lg w-44">
               <div className="flex items-center gap-1.5 text-xs font-bold text-[#6ee7b7]">
-                <AlertTriangle className="size-3.5" />
+                <AlertTriangle className="size-3.5" aria-hidden="true" />
                 <span>Napa + Ace 500mg</span>
               </div>
               <p className="text-[11px] text-teal-100/90 mt-1 leading-snug">
@@ -182,9 +191,9 @@ export function HealthcareShowcaseCard() {
           <div className="flex items-center justify-between gap-3 rounded-full bg-white/95 backdrop-blur-xl px-5 py-2.5 shadow-lg border border-white w-full max-w-md">
             <Link
               href="/scan"
-              className="flex items-center gap-2 text-xs font-bold text-[#09353c] hover:text-[#0ea86b] transition"
+              className="flex items-center gap-2 text-xs font-bold text-[#09353c] hover:text-[#0ea86b] transition rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0ea86b] focus-visible:ring-offset-2"
             >
-              <Camera className="size-4 text-[#0ea86b]" />
+              <Camera className="size-4 text-[#0ea86b]" aria-hidden="true" />
               <span>Scan Strips</span>
             </Link>
 
@@ -192,18 +201,19 @@ export function HealthcareShowcaseCard() {
 
             <Link
               href="/database"
-              className="flex items-center gap-1.5 text-xs font-semibold text-[#46737a] hover:text-[#09353c] transition"
+              className="flex items-center gap-1.5 text-xs font-semibold text-[#46737a] hover:text-[#09353c] transition rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0ea86b] focus-visible:ring-offset-2"
             >
-              <Database className="size-3.5 text-[#0d9488]" />
+              <Database className="size-3.5 text-[#0d9488]" aria-hidden="true" />
               <span>21K+ BD Database</span>
             </Link>
 
             <Link
               href="/scan"
               title="Go to Scanner"
-              className="flex items-center justify-center size-9 rounded-full bg-[#0ea86b] hover:bg-[#0b5563] text-white shadow-md shadow-[#0ea86b]/30 transition"
+              aria-label="Go to Scanner"
+              className="flex items-center justify-center size-9 rounded-full bg-[#0ea86b] hover:bg-[#0b5563] text-white shadow-md shadow-[#0ea86b]/30 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0ea86b] focus-visible:ring-offset-2"
             >
-              <ArrowRight className="size-4" />
+              <ArrowRight className="size-4" aria-hidden="true" />
             </Link>
           </div>
         </div>
@@ -211,10 +221,10 @@ export function HealthcareShowcaseCard() {
 
       {/* Bottom Floating Circular Badges outside card */}
       <div className="floating-mini-badge hidden sm:flex items-center justify-center size-10 rounded-full bg-white/90 shadow-md border border-white absolute bottom-8 left-4 z-20 text-[#0b5563] will-change-transform">
-        <ShieldCheck className="size-4 text-[#0ea86b]" />
+        <ShieldCheck className="size-4 text-[#0ea86b]" aria-hidden="true" />
       </div>
       <div className="floating-mini-badge hidden sm:flex items-center justify-center size-11 rounded-full bg-white/90 shadow-md border border-white absolute bottom-4 right-24 z-20 text-[#0b5563] will-change-transform">
-        <Volume2 className="size-4 text-[#0d9488]" />
+        <Volume2 className="size-4 text-[#0d9488]" aria-hidden="true" />
       </div>
     </section>
   );

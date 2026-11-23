@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useRef } from "react";
-import { Mail, Globe, ExternalLink } from "lucide-react";
+import { Mail } from "lucide-react";
 import { useParallaxZoom } from "@/components/scroll-reveal";
 
 function GitHubIcon({ className }: { className?: string }) {
@@ -113,6 +113,8 @@ export function AboutTeamSection() {
                       <img
                         src={githubAvatarUrl}
                         alt={member.name}
+                        loading="lazy"
+                        decoding="async"
                         className="size-full object-cover"
                       />
                     </div>
@@ -125,16 +127,17 @@ export function AboutTeamSection() {
                     {member.name}
                   </h3>
 
-                  <span className="mt-2 inline-block rounded-full bg-[#f2f9f8] text-[#0b5563] border border-teal-200/70 px-4 py-1 text-[11px] font-bold">
-                    {member.role}
-                  </span>
+                 <span className="mt-2 inline-block rounded-full bg-[#f2f9f8] text-[#0b5563] border border-teal-200/70 px-4 py-1 text-[11px] font-bold transition-shadow duration-300 hover:shadow-[0_0_18px_rgba(14,168,107,0.6)]">
+  {member.role}
+</span>
 
                   <p className="mt-3.5 text-xs text-[#46737a] leading-relaxed max-w-xs">
                     {member.bio}
                   </p>
                   <a
                     href={`mailto:${member.email}`}
-                    className="mt-2 text-[11px] font-semibold text-[#0d9488] hover:text-[#0ea86b] transition"
+                    aria-label={`Email ${member.name}`}
+                    className="mt-2 text-[11px] font-semibold text-[#0d9488] hover:text-[#0ea86b] transition rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0ea86b] focus-visible:ring-offset-2"
                   >
                     {member.email}
                   </a>
@@ -146,7 +149,8 @@ export function AboutTeamSection() {
                       target="_blank"
                       rel="noopener noreferrer"
                       title={`${member.name} on GitHub`}
-                      className="flex items-center justify-center size-8 rounded-full bg-[#f2f9f8] hover:bg-[#0b5563] hover:text-white transition"
+                      aria-label={`${member.name} on GitHub`}
+                      className="flex items-center justify-center size-8 rounded-full bg-[#f2f9f8] hover:bg-[#0b5563] hover:text-white transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0ea86b] focus-visible:ring-offset-2"
                     >
                       <GitHubIcon className="size-4" />
                     </a>
@@ -154,29 +158,10 @@ export function AboutTeamSection() {
                     <a
                       href={`mailto:${member.email}`}
                       title={`Email ${member.name}`}
-                      className="flex items-center justify-center size-8 rounded-full bg-[#f2f9f8] hover:bg-[#0ea86b] hover:text-white transition"
+                      aria-label={`Email ${member.name}`}
+                      className="flex items-center justify-center size-8 rounded-full bg-[#f2f9f8] hover:bg-[#0ea86b] hover:text-white transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0ea86b] focus-visible:ring-offset-2"
                     >
-                      <Mail className="size-4" />
-                    </a>
-
-                    <a
-                      href={member.githubUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      title="GitHub Profile"
-                      className="flex items-center justify-center size-8 rounded-full bg-[#f2f9f8] hover:bg-[#0d9488] hover:text-white transition"
-                    >
-                      <Globe className="size-4" />
-                    </a>
-
-                    <a
-                      href={member.githubUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      title="Open GitHub"
-                      className="flex items-center justify-center size-8 rounded-full bg-[#f2f9f8] hover:bg-[#0b5563] hover:text-white transition"
-                    >
-                      <ExternalLink className="size-4" />
+                      <Mail className="size-4" aria-hidden="true" />
                     </a>
                   </div>
                 </div>

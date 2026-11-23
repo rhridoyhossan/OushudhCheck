@@ -37,9 +37,10 @@ import {
 } from "@/lib/types";
 import {
   analyzeMedicineImageStream,
-  BACKEND_ORIGIN,
+  fetchBanglaTtsAudioBlob,
 } from "@/lib/api";
 import { BanglaVoiceWaveform } from "@/components/bangla-voice-waveform";
+import { MedicineBanglaVoicePlayer } from "@/components/medicine-bangla-voice-player";
 import { toast } from "sonner";
 
 const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
@@ -199,9 +200,10 @@ export function MedicineScannerWorkspace() {
   const imagePreviewRef = useRef<string | null>(null);
 
   const hasUploadedImage = Boolean(selectedFile || imagePreview);
+  const voiceScriptText = (analysis?.banglaVoiceScript || "").trim();
   const activeVoiceKey =
-    step === "summary" && analysis?.audioUrl
-      ? `${analysis.scanId}:${analysis.audioUrl}`
+    step === "summary" && (analysis?.audioUrl || voiceScriptText)
+      ? `${analysis.scanId}:${analysis.audioUrl || voiceScriptText.slice(0, 64)}`
       : null;
   const isVoiceLoading = Boolean(
     activeVoiceKey &&
@@ -253,7 +255,7 @@ export function MedicineScannerWorkspace() {
   // Background voice pre-fetcher: as soon as scan results appear on screen, prepare the Bangla MP3
   // asynchronously while showing a live animated voice loader until ready.
   useEffect(() => {
-    if (!activeVoiceKey || !analysis?.audioUrl) {
+    if (!activeVoiceKey || (!analysis?.audioUrl && !voiceScriptText)) {
       return;
     }
 
@@ -266,14 +268,11 @@ export function MedicineScannerWorkspace() {
       audioRef.current = null;
     }
 
-    const fullAudioUrl = analysis.audioUrl.startsWith("http")
-      ? analysis.audioUrl
-      : `${BACKEND_ORIGIN}${analysis.audioUrl}`;
-
-    fetch(fullAudioUrl, { signal: controller.signal })
-      .then((res) =>
-        res.ok ? res.blob() : Promise.reject(new Error("TTS failed"))
-      )
+    fetchBanglaTtsAudioBlob(
+      voiceScriptText,
+      analysis?.audioUrl,
+      controller.signal
+    )
       .then((blob) => {
         if (cancelled) return;
         const objUrl = URL.createObjectURL(blob);
@@ -304,7 +303,8 @@ export function MedicineScannerWorkspace() {
         };
         setVoiceLoadedForKey(activeVoiceKey);
       })
-      .catch(() => {
+      .catch((err) => {
+        if (err instanceof DOMException && err.name === "AbortError") return;
         if (!cancelled) {
           setVoiceFailedForKey(activeVoiceKey);
         }
@@ -322,7 +322,7 @@ export function MedicineScannerWorkspace() {
         URL.revokeObjectURL(createdObjUrl);
       }
     };
-  }, [activeVoiceKey, analysis?.audioUrl]);
+  }, [activeVoiceKey, analysis?.audioUrl, voiceScriptText]);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles.length > 0) {
@@ -526,6 +526,16 @@ export function MedicineScannerWorkspace() {
     });
     setSelectedFile(null);
   };
+
+  const pauseMainVoice = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+    }
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+    setIsPlayingVoice(false);
+  }, []);
 
   const toggleBanglaVoice = () => {
     if (typeof window === "undefined") return;
@@ -1319,19 +1329,24 @@ export function MedicineScannerWorkspace() {
 
             {/* Bangla Beginner-Friendly Summary Highlight Card */}
             {activeMedicine.beginner_summary && (
-              <div className="rounded-3xl bg-gradient-to-br from-[#f2f9f8] via-emerald-50/60 to-[#f2f9f8] p-5 border-2 border-[#0ea86b]/30 shadow-xs space-y-2">
-                <div className="flex items-center justify-between">
+              <div className="rounded-3xl bg-gradient-to-br from-[#f2f9f8] via-emerald-50/60 to-[#f2f9f8] p-5 border-2 border-[#0ea86b]/30 shadow-xs space-y-3.5">
+                <div className="flex items-center justify-between gap-2">
                   <p className="text-xs font-extrabold uppercase tracking-wider text-[#0ea86b] flex items-center gap-1.5">
                     <Sparkles className="size-4 text-[#0ea86b]" />
                     সহজ বাংলা সারসংক্ষেপ (Bangla Summary)
                   </p>
-                  <span className="rounded-full bg-white px-2.5 py-0.5 text-[10px] font-bold text-[#0b5563] border border-teal-100">
+                  <span className="rounded-full bg-white px-2.5 py-0.5 text-[10px] font-bold text-[#0b5563] border border-teal-100 shrink-0">
                     Gemma 3 1B SLM
                   </span>
                 </div>
                 <p className="text-xs sm:text-sm font-medium text-[#09353c] leading-relaxed whitespace-pre-line">
                   {activeMedicine.beginner_summary}
                 </p>
+                <MedicineBanglaVoicePlayer
+                  key={`${activeMedicine.brand_id}:${activeMedicine.brand_name}:${activeMedicine.package_container || ""}`}
+                  text={activeMedicine.beginner_summary}
+                  onPlayStart={pauseMainVoice}
+                />
               </div>
             )}
 

@@ -36,7 +36,11 @@ if str(ROOT_DIR) not in sys.path:
 load_dotenv(ROOT_DIR / ".env")
 
 from backend.app.services.ocr import MedicineStripScanner, evaluate_multi_strip_safety
-from backend.app.services.voice import synthesize_bangla_speech, transcribe_bangla_audio
+from backend.app.services.voice import (
+    build_scan_bangla_voice_script,
+    synthesize_bangla_speech,
+    transcribe_bangla_audio,
+)
 
 MAX_TELEGRAM_MSG_LEN = 3900
 MAX_DOWNLOAD_BYTES = 15 * 1024 * 1024  # 15 MB
@@ -406,7 +410,6 @@ class OushudhCheckTelegramBot:
         lines_out = [
             f"💊 <b>OushudhCheck স্ক্যান রিপোর্ট</b> (<i>{len(matched)}টি স্ট্রিপ • {elapsed_ms}ms</i>)\n"
         ]
-        voice_parts = [f"আপনার ছবিতে {len(matched)}টি ওষুধের পাতা শনাক্ত করা হয়েছে।"]
 
         for idx, (s, (dosage_bn, bangla_summary, timing_tag)) in enumerate(zip(matched, guidance_list), start=1):
             m = s.matched_medicine
@@ -421,16 +424,13 @@ class OushudhCheckTelegramBot:
                 f"   • <b>নির্দেশনা:</b> {_esc(dosage_bn)}\n"
                 f"   • <b>বাংলা সারসংক্ষেপ:</b> {_format_tg_summary(bangla_summary, indent='   ')}\n"
             )
-            voice_parts.append(f"স্ট্রিপ {idx}: {m.brand_name}, মাত্রা {strength}। {dosage_bn}")
 
         if alerts:
             lines_out.append("\n🚨 <b>সতর্কতা (Safety Alerts):</b>")
             for a in alerts:
                 lines_out.append(f"• ⚠️ <b>{_esc(a.message_bn)}</b>")
-                voice_parts.append(a.message_bn)
         else:
             lines_out.append("✅ <b>নিরাপত্তা যাচাই:</b> শনাক্তকৃত ওষুধে কোনো ডুপ্লিকেট জেনেরিক বা ঝুঁকিপূর্ণ আন্তঃক্রিয়া পাওয়া যায়নি।")
-            voice_parts.append("ওষুধগুলোতে কোনো ডুপ্লিকেট উপাদান পাওয়া যায়নি।")
 
         # Remove the temporary progress bar cleanly before sending the final report so it never stays stuck at 70%/90%!
         await self.delete_message(session, chat_id, progress_msg_id)
@@ -445,7 +445,11 @@ class OushudhCheckTelegramBot:
             "🔊 <i>বাংলা ভয়েস অডিও তৈরি হচ্ছে... অনুগ্রহ করে অপেক্ষা করুন (Generating Bangla Voice Audio...)</i>",
         )
         await self.send_chat_action(session, chat_id, "record_voice")
-        voice_script = " ".join(voice_parts)
+        voice_script = build_scan_bangla_voice_script(
+            matched_strips=matched,
+            guidance_list=guidance_list,
+            safety_alerts=alerts,
+        )
         audio_path = await synthesize_bangla_speech(voice_script)
         if audio_path and audio_path.exists():
             await self.send_voice_mp3(
@@ -576,7 +580,8 @@ class OushudhCheckTelegramBot:
             "🔊 <i>বাংলা ভয়েস অডিও তৈরি হচ্ছে... (Generating Bangla Voice...)</i>",
         )
         await self.send_chat_action(session, chat_id, "record_voice")
-        audio_path = await synthesize_bangla_speech(f"{dosage_bn} {bangla_summary}")
+        voice_text = (bangla_summary or "").strip() or dosage_bn
+        audio_path = await synthesize_bangla_speech(voice_text)
         if audio_path and audio_path.exists():
             await self.send_voice_mp3(session, chat_id, audio_path, caption=f"🔊 {m.brand_name} ({strength})")
             await self.delete_message(session, chat_id, voice_status_id)

@@ -22,10 +22,10 @@ export function HeroSection() {
       <div className="mt-8 flex items-center justify-center gap-3">
         <Link
           href="/scan"
-          className="inline-flex items-center gap-2 rounded-full bg-[#0b5563] hover:bg-[#0ea86b] text-white text-xs font-bold uppercase tracking-widest px-7 py-3.5 shadow-lg shadow-[#0b5563]/20 transition-all active:scale-95"
+          className="inline-flex items-center gap-2 rounded-full bg-[#0b5563] hover:bg-[#0ea86b] text-white text-xs font-bold uppercase tracking-widest px-7 py-3.5 shadow-lg shadow-[#0b5563]/20 transition-all active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0ea86b] focus-visible:ring-offset-2"
         >
           <span>Open Medicine Scanner</span>
-          <ArrowUpRight className="size-4" />
+          <ArrowUpRight className="size-4" aria-hidden="true" />
         </Link>
       </div>
     </section>

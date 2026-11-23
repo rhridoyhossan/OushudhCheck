@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from itertools import combinations
 from typing import Any, Dict, List, Optional, Tuple
 import asyncio
@@ -25,11 +26,18 @@ try:
         MultiTextExtractRequest,
         PaginatedMedicinesResponse,
         StripScanResult,
+        TTSRequest,
         TextExtractRequest,
     )
     from backend.app.services.ocr import MedicineStripScanner, evaluate_multi_strip_safety
     from backend.app.services.slm import generate_bangla_beginner_summary, get_active_slm_label
-    from backend.app.services.voice import synthesize_bangla_speech
+    from backend.app.services.voice import (
+        build_scan_bangla_voice_script,
+        get_cached_tts_audio_path,
+        get_tts_cache_key,
+        prepare_bangla_tts_text,
+        synthesize_bangla_speech,
+    )
 except ImportError:
     from app.core.config import PROJECT_ROOT, get_readonly_db_connection  # type: ignore
     from app.models.schemas import (  # type: ignore
@@ -38,11 +46,18 @@ except ImportError:
         MultiTextExtractRequest,
         PaginatedMedicinesResponse,
         StripScanResult,
+        TTSRequest,
         TextExtractRequest,
     )
     from app.services.ocr import MedicineStripScanner, evaluate_multi_strip_safety  # type: ignore
     from app.services.slm import generate_bangla_beginner_summary, get_active_slm_label  # type: ignore
-    from app.services.voice import synthesize_bangla_speech  # type: ignore
+    from app.services.voice import (  # type: ignore
+        build_scan_bangla_voice_script,
+        get_cached_tts_audio_path,
+        get_tts_cache_key,
+        prepare_bangla_tts_text,
+        synthesize_bangla_speech,
+    )
 
 logger = logging.getLogger("oushudhcheck.api")
 router = APIRouter()
@@ -101,6 +116,23 @@ _SCANNER_INSTANCE: Optional[MedicineStripScanner] = None
 _SCANNER_LOCK = threading.Lock()
 _DB_STATS_CACHE: Optional[Dict[str, int]] = None
 _SLM_CONCURRENCY_LIMIT = 2
+_TTS_SCRIPT_STORE_MAX = 256
+_TTS_SCRIPT_STORE: "OrderedDict[str, str]" = OrderedDict()
+_TTS_SCRIPT_LOCK = threading.Lock()
+
+
+def _register_tts_clip(text: str) -> Optional[str]:
+    """Stores a full Bangla voice script under its short 16-char cache ID to avoid URL length caps."""
+    cleaned = prepare_bangla_tts_text(text)
+    if not cleaned:
+        return None
+    audio_id = get_tts_cache_key(cleaned)
+    with _TTS_SCRIPT_LOCK:
+        _TTS_SCRIPT_STORE[audio_id] = cleaned
+        _TTS_SCRIPT_STORE.move_to_end(audio_id)
+        while len(_TTS_SCRIPT_STORE) > _TTS_SCRIPT_STORE_MAX:
+            _TTS_SCRIPT_STORE.popitem(last=False)
+    return audio_id
 
 
 def get_scanner() -> MedicineStripScanner:
@@ -392,19 +424,53 @@ def extract_from_multiple_strip_texts(payload: MultiTextExtractRequest) -> Multi
     return scanner.scan_texts(payload.strip_texts)
 
 
-@router.get("/tts")
-async def get_bangla_tts_audio(
-    text: str = Query(..., min_length=1, max_length=1500, description="Bangla text to synthesize into speech"),
-):
-    audio_path = await synthesize_bangla_speech(text)
-    if not audio_path or not audio_path.exists():
-        raise HTTPException(status_code=500, detail="Bangla TTS synthesis failed.")
+def _tts_file_response(audio_path) -> FileResponse:
     return FileResponse(
         path=str(audio_path),
         media_type="audio/mpeg",
         filename=audio_path.name,
         headers={"Cache-Control": "public, max-age=86400, immutable"},
     )
+
+
+@router.get("/tts")
+async def get_bangla_tts_audio(
+    text: str = Query(..., min_length=1, max_length=5000, description="Bangla text to synthesize into speech"),
+):
+    audio_path = await synthesize_bangla_speech(text)
+    if not audio_path or not audio_path.exists():
+        raise HTTPException(status_code=500, detail="Bangla TTS synthesis failed.")
+    return _tts_file_response(audio_path)
+
+
+@router.post("/tts")
+async def post_bangla_tts_audio(payload: TTSRequest):
+    """Synthesizes full Bangla medicine summaries via JSON body without URL length limits."""
+    audio_path = await synthesize_bangla_speech(payload.text)
+    if not audio_path or not audio_path.exists():
+        raise HTTPException(status_code=500, detail="Bangla TTS synthesis failed.")
+    return _tts_file_response(audio_path)
+
+
+@router.get("/tts/clip/{audio_id}")
+async def get_registered_bangla_tts_clip(audio_id: str):
+    """Serves synthesized Bangla TTS audio for a registered scan clip ID (disk cache or on-demand)."""
+    cached_path = get_cached_tts_audio_path(audio_id)
+    if cached_path is not None:
+        return _tts_file_response(cached_path)
+
+    with _TTS_SCRIPT_LOCK:
+        script = _TTS_SCRIPT_STORE.get(audio_id)
+        if script is not None:
+            _TTS_SCRIPT_STORE.move_to_end(audio_id)
+
+    if not script:
+        raise HTTPException(status_code=404, detail="Bangla TTS audio clip expired; use POST /api/v1/tts.")
+
+    audio_path = await synthesize_bangla_speech(script)
+    if not audio_path or not audio_path.exists():
+        raise HTTPException(status_code=500, detail="Bangla TTS synthesis failed.")
+    return _tts_file_response(audio_path)
 
 
 @router.get("/benchmark-samples")
@@ -478,33 +544,6 @@ async def _assemble_scan_response(
     img_h, img_w = image.shape[:2]
     matched_strips = [s for s in scan_resp.strips if s.matched_medicine is not None]
 
-    t_voice = time.perf_counter()
-    from urllib.parse import quote
-
-    if matched_strips:
-        concise_voice_parts = [f"আপনার ছবিতে {len(matched_strips)}টি ওষুধের পাতা শনাক্ত করা হয়েছে।"]
-        for idx, s in enumerate(matched_strips, start=1):
-            m = s.matched_medicine
-            if m:
-                st = s.extracted_strength or ""
-                concise_voice_parts.append(f"স্ট্রিপ {idx}: {m.brand_name} {st}, জেনেরিক {m.generic}।")
-        for a in scan_resp.safety_alerts:
-            concise_voice_parts.append(a.message_bn)
-        if not scan_resp.safety_alerts:
-            concise_voice_parts.append("ওষুধগুলোতে কোনো ডুপ্লিকেট বা ঝুঁকিপূর্ণ আন্তঃক্রিয়া পাওয়া যায়নি।")
-        concise_voice_script = " ".join(concise_voice_parts)
-        audio_url: Optional[str] = f"/api/v1/tts?text={quote(concise_voice_script[:1400])}"
-    else:
-        concise_voice_script = scan_resp.summary_bn
-        audio_url = None
-
-    if wait_for_voice and matched_strips:
-        await synthesize_bangla_speech(concise_voice_script)
-        voice_ms = max(8, int((time.perf_counter() - t_voice) * 1000))
-    else:
-        # Voice synthesis runs asynchronously on the client via /api/v1/tts
-        voice_ms = 0
-
     # Extract per-strip cropped and CLAHE-preprocessed thumbnails in threadpool
     t_thumb = time.perf_counter()
     strip_thumbs = await run_in_threadpool(_build_strip_thumbnails, image, matched_strips, scanner)
@@ -530,6 +569,26 @@ async def _assemble_scan_response(
         t_slm_extra = time.perf_counter()
         guidance_list = await _build_guidance_parallel(scanner, matched_strips, dup_strip_ids, inter_strip_ids)
         slm_ms += int((time.perf_counter() - t_slm_extra) * 1000)
+
+    t_voice = time.perf_counter()
+    full_voice_script = build_scan_bangla_voice_script(
+        matched_strips=matched_strips,
+        guidance_list=guidance_list,
+        safety_alerts=scan_resp.safety_alerts,
+        fallback_summary_bn=scan_resp.summary_bn,
+    )
+    if matched_strips:
+        audio_id = _register_tts_clip(full_voice_script)
+        audio_url: Optional[str] = f"/api/v1/tts/clip/{audio_id}" if audio_id else None
+    else:
+        audio_url = None
+
+    if wait_for_voice and matched_strips and full_voice_script:
+        await synthesize_bangla_speech(full_voice_script)
+        voice_ms = max(8, int((time.perf_counter() - t_voice) * 1000))
+    else:
+        # Voice synthesis runs asynchronously on the client via /api/v1/tts/clip/{audio_id} or POST /api/v1/tts
+        voice_ms = 0
 
     total_ms = yolo_ms + prep_ms + ocr_ms + fuzz_ms + slm_ms + voice_ms
     wall_ms = max(total_ms, int((time.perf_counter() - t0) * 1000))
@@ -726,7 +785,7 @@ async def _assemble_scan_response(
         "overallSafety": overall_safety,
         "detectedStrips": detected_strips_ui,
         "alerts": alerts_ui,
-        "banglaVoiceScript": concise_voice_script,
+        "banglaVoiceScript": full_voice_script,
         "englishTranslation": scan_resp.summary_en,
         "audioUrl": audio_url,
         "transparencyInspector": transparency_inspector,

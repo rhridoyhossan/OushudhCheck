@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional, Sequence, Tuple
 import asyncio
 import hashlib
 import logging
 import os
+import re
 import tempfile
 import threading
 import uuid
@@ -16,8 +17,102 @@ DEFAULT_BANGLA_VOICE = "bn-BD-NabanitaNeural"
 AUDIO_CACHE_DIR = Path(tempfile.gettempdir()) / "oushudhcheck_tts"
 MAX_TTS_CACHE_FILES = 200
 MAX_TTS_CACHE_BYTES = 100 * 1024 * 1024  # 100 MB
+MAX_TTS_TEXT_CHARS = 6000
+_AUDIO_ID_RE = re.compile(r"^[0-9a-f]{16}$")
+_TTS_STRIP_SYMBOLS_RE = re.compile(r"[⚠️🚨💊✅🔊📖•]+")
 _WHISPER_MODEL = None
 _WHISPER_LOCK = threading.Lock()
+
+
+def prepare_bangla_tts_text(text: str, max_chars: int = MAX_TTS_TEXT_CHARS) -> str:
+    """
+    Normalizes Bangla/mixed medicine summaries for natural Edge Neural TTS pronunciation.
+    Strips UI symbols/emojis and converts line breaks into clean spoken pauses while
+    preserving the complete medicine summary, dosage instructions, and warnings.
+    """
+    raw = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not raw:
+        return ""
+
+    raw = _TTS_STRIP_SYMBOLS_RE.sub(" ", raw)
+    raw = re.sub(r"\s*[—–]\s*", ", ", raw)
+
+    normalized_lines = []
+    for line in raw.split("\n"):
+        cleaned_line = re.sub(r"[ \t]+", " ", line).strip()
+        if not cleaned_line:
+            continue
+        if cleaned_line[-1] not in "।.!?,;:":
+            cleaned_line += "।"
+        normalized_lines.append(cleaned_line)
+
+    cleaned = re.sub(r"\s+", " ", " ".join(normalized_lines)).strip()
+    if len(cleaned) > max_chars:
+        truncated = cleaned[:max_chars]
+        last_stop = max(truncated.rfind("।"), truncated.rfind("."))
+        cleaned = (truncated[: last_stop + 1] if last_stop > max_chars // 2 else truncated).strip()
+    return cleaned
+
+
+def get_tts_cache_key(
+    text: str,
+    voice: str = DEFAULT_BANGLA_VOICE,
+    rate: str = "-5%",
+) -> str:
+    cleaned = prepare_bangla_tts_text(text)
+    return hashlib.sha256(f"{voice}:{rate}:{cleaned}".encode("utf-8")).hexdigest()[:16]
+
+
+def get_cached_tts_audio_path(audio_id: str) -> Optional[Path]:
+    """Returns the cached MP3 path for a valid 16-hex-char audio ID if it exists on disk."""
+    if not audio_id or not _AUDIO_ID_RE.match(audio_id):
+        return None
+    candidate = AUDIO_CACHE_DIR / f"tts_{audio_id}.mp3"
+    if candidate.exists() and candidate.stat().st_size > 0:
+        return candidate
+    return None
+
+
+def build_scan_bangla_voice_script(
+    matched_strips: Sequence[Any],
+    guidance_list: Sequence[Tuple[str, str, str]],
+    safety_alerts: Sequence[Any],
+    fallback_summary_bn: str = "",
+) -> str:
+    """
+    Builds the complete Bangla voice script for scanned medicine strips, including each
+    medicine's full `সহজ বাংলা সারসংক্ষেপ` (indications, usage/timing, and warnings)
+    followed by duplicate/interaction safety alerts.
+    """
+    if not matched_strips:
+        return (fallback_summary_bn or "").strip()
+
+    voice_parts = [f"আপনার ছবিতে {len(matched_strips)}টি ওষুধের পাতা শনাক্ত করা হয়েছে।"]
+    for idx, (strip, guidance) in enumerate(zip(matched_strips, guidance_list), start=1):
+        med = getattr(strip, "matched_medicine", None)
+        if not med:
+            continue
+        dosage_bn, bangla_summary, _timing_tag = guidance
+        summary_clean = " ".join((bangla_summary or "").split()).strip()
+        if summary_clean:
+            voice_parts.append(f"স্ট্রিপ {idx}: {summary_clean}")
+        else:
+            strength = getattr(strip, "extracted_strength", None) or ""
+            strength_part = f" {strength}" if strength else ""
+            fallback_line = f"স্ট্রিপ {idx}: {med.brand_name}{strength_part}, জেনেরিক {med.generic}।"
+            if dosage_bn:
+                fallback_line = f"{fallback_line} {dosage_bn}"
+            voice_parts.append(fallback_line)
+
+    for alert in safety_alerts:
+        msg_bn = (getattr(alert, "message_bn", "") or "").strip()
+        if msg_bn:
+            voice_parts.append(msg_bn)
+
+    if not safety_alerts:
+        voice_parts.append("ওষুধগুলোতে কোনো ডুপ্লিকেট বা ঝুঁকিপূর্ণ আন্তঃক্রিয়া পাওয়া যায়নি।")
+
+    return "\n".join(voice_parts)
 
 
 def _evict_tts_cache_if_needed() -> None:
@@ -103,12 +198,12 @@ async def synthesize_bangla_speech(
     Synthesizes natural Bangla speech (.mp3) using Microsoft Edge TTS (`edge-tts`).
     Caches generated audio files by text hash for fast replay in web and Telegram bot.
     """
-    cleaned = (text or "").strip()
+    cleaned = prepare_bangla_tts_text(text)
     if not cleaned:
         return None
 
     AUDIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    digest = hashlib.sha256(f"{voice}:{rate}:{cleaned}".encode("utf-8")).hexdigest()[:16]
+    digest = get_tts_cache_key(cleaned, voice=voice, rate=rate)
     out_path = AUDIO_CACHE_DIR / f"tts_{digest}.mp3"
 
     if out_path.exists() and out_path.stat().st_size > 0:

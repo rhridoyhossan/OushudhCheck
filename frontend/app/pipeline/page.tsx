@@ -4,7 +4,11 @@ import React, { useEffect, useState, useRef, useCallback } from "react";
 import { Navbar } from "@/components/navbar";
 import { Footer } from "@/components/footer";
 import { AITransparencyInspector } from "@/components/ai-transparency-inspector";
-import { BACKEND_ORIGIN, analyzeMedicineImageStream } from "@/lib/api";
+import { MedicineBanglaVoicePlayer } from "@/components/medicine-bangla-voice-player";
+import {
+  analyzeMedicineImageStream,
+  fetchBanglaTtsAudioBlob,
+} from "@/lib/api";
 import {
   BoundingBox,
   MedicineDatabaseRecord,
@@ -73,6 +77,13 @@ const PIPELINE_STAGE_STEPS = [
 ];
 
 function splitBanglaLines(script: string): string[] {
+  const byNewline = script
+    .split(/\r?\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (byNewline.length > 1) {
+    return byNewline;
+  }
   return script
     .split(/(?<=।)\s*/)
     .map((line) => line.trim())
@@ -112,9 +123,11 @@ export default function PipelineInspectorPage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const uploadedPreviewUrlRef = useRef<string | null>(null);
 
-  const activeVoiceKey = analysis?.audioUrl
-    ? `${analysis.scanId}:${analysis.audioUrl}`
-    : null;
+  const voiceScriptText = (analysis?.banglaVoiceScript || "").trim();
+  const activeVoiceKey =
+    analysis && (analysis.audioUrl || voiceScriptText)
+      ? `${analysis.scanId}:${analysis.audioUrl || voiceScriptText.slice(0, 64)}`
+      : null;
   const isVoiceLoading = Boolean(
     activeVoiceKey &&
       voiceLoadedForKey !== activeVoiceKey &&
@@ -164,7 +177,7 @@ export default function PipelineInspectorPage() {
 
   // Pre-fetch Bangla TTS audio asynchronously in background after scan results appear
   useEffect(() => {
-    if (!activeVoiceKey || !analysis?.audioUrl) {
+    if (!activeVoiceKey || (!analysis?.audioUrl && !voiceScriptText)) {
       return;
     }
     let cancelled = false;
@@ -172,12 +185,11 @@ export default function PipelineInspectorPage() {
     const controller = new AbortController();
     const tVoice0 = Date.now();
 
-    const fullAudioUrl = analysis.audioUrl.startsWith("http")
-      ? analysis.audioUrl
-      : `${BACKEND_ORIGIN}${analysis.audioUrl}`;
-
-    fetch(fullAudioUrl, { signal: controller.signal })
-      .then((res) => (res.ok ? res.blob() : Promise.reject(new Error("TTS failed"))))
+    fetchBanglaTtsAudioBlob(
+      voiceScriptText,
+      analysis?.audioUrl,
+      controller.signal
+    )
       .then((blob) => {
         if (cancelled) return;
         const voiceElapsed = Math.max(12, Math.round(Date.now() - tVoice0));
@@ -212,7 +224,8 @@ export default function PipelineInspectorPage() {
           };
         });
       })
-      .catch(() => {
+      .catch((err) => {
+        if (err instanceof DOMException && err.name === "AbortError") return;
         if (!cancelled) {
           setVoiceFailedForKey(activeVoiceKey);
           setLiveStageStatuses((prev) => {
@@ -234,7 +247,7 @@ export default function PipelineInspectorPage() {
         URL.revokeObjectURL(createdObjUrl);
       }
     };
-  }, [activeVoiceKey, analysis?.audioUrl]);
+  }, [activeVoiceKey, analysis?.audioUrl, voiceScriptText]);
 
   const executeUploadedScan = useCallback(async (file: File) => {
     setIsRunning(true);
@@ -381,6 +394,16 @@ export default function PipelineInspectorPage() {
     }
     executeUploadedScan(uploadedFile);
   };
+
+  const pauseMainVoice = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+    }
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+    setIsPlayingVoice(false);
+  }, []);
 
   const toggleBanglaVoice = () => {
     if (!analysis || typeof window === "undefined") return;
@@ -868,19 +891,24 @@ export default function PipelineInspectorPage() {
             </div>
 
             {activeMedicine.beginner_summary && (
-              <div className="rounded-3xl bg-gradient-to-br from-[#f2f9f8] via-emerald-50/60 to-[#f2f9f8] p-5 border-2 border-[#0ea86b]/30 shadow-xs space-y-2">
-                <div className="flex items-center justify-between">
+              <div className="rounded-3xl bg-gradient-to-br from-[#f2f9f8] via-emerald-50/60 to-[#f2f9f8] p-5 border-2 border-[#0ea86b]/30 shadow-xs space-y-3.5">
+                <div className="flex items-center justify-between gap-2">
                   <p className="text-xs font-extrabold uppercase tracking-wider text-[#0ea86b] flex items-center gap-1.5">
                     <Sparkles className="size-4 text-[#0ea86b]" />
                     সহজ বাংলা সারসংক্ষেপ (Bangla Summary)
                   </p>
-                  <span className="rounded-full bg-white px-2.5 py-0.5 text-[10px] font-bold text-[#0b5563] border border-teal-100">
+                  <span className="rounded-full bg-white px-2.5 py-0.5 text-[10px] font-bold text-[#0b5563] border border-teal-100 shrink-0">
                     Gemma 3 1B SLM
                   </span>
                 </div>
                 <p className="text-xs sm:text-sm font-medium text-[#09353c] leading-relaxed whitespace-pre-line">
                   {activeMedicine.beginner_summary}
                 </p>
+                <MedicineBanglaVoicePlayer
+                  key={`${activeMedicine.brand_id}:${activeMedicine.brand_name}:${activeMedicine.package_container || ""}`}
+                  text={activeMedicine.beginner_summary}
+                  onPlayStart={pauseMainVoice}
+                />
               </div>
             )}
 

@@ -17,7 +17,9 @@ import {
   AlertTriangle,
   Clock,
   Activity,
+  Sparkles,
 } from "lucide-react";
+import { MedicineBanglaVoicePlayer } from "@/components/medicine-bangla-voice-player";
 
 export interface MedicineRecord {
   brand_id: number;
@@ -542,21 +544,25 @@ export function MedicineDatabaseDirectory() {
                 </div>
               </div>
 
-              {/* Beginner-Friendly Summary Highlight Card */}
+              {/* Beginner-Friendly Summary Highlight Card + Bangla Voice Player */}
               {activeMedicine.beginner_summary && (
-                <div className="rounded-3xl bg-gradient-to-br from-[#f2f9f8] via-emerald-50/60 to-[#f2f9f8] p-5 border-2 border-[#0ea86b]/30 shadow-xs space-y-2">
+                <div className="rounded-3xl bg-gradient-to-br from-[#f2f9f8] via-emerald-50/60 to-[#f2f9f8] p-5 border-2 border-[#0ea86b]/30 shadow-xs space-y-3.5">
                   <div className="flex items-center justify-between gap-2">
                     <p className="text-xs font-extrabold uppercase tracking-wider text-[#0ea86b] flex items-center gap-1.5">
-                      <Pill className="size-4 text-[#0ea86b]" />
-                      Easy Summary (Beginner-Friendly Guide)
+                      <Sparkles className="size-4 text-[#0ea86b]" />
+                      সহজ বাংলা সারসংক্ষেপ (Bangla Summary)
                     </p>
                     <span className="rounded-full bg-white px-2.5 py-0.5 text-[10px] font-bold text-[#0b5563] border border-teal-100 shrink-0">
-                      Simple Guide
+                      Gemma 3 1B SLM
                     </span>
                   </div>
-                  <p className="text-xs sm:text-sm font-medium text-[#09353c] leading-relaxed">
+                  <p className="text-xs sm:text-sm font-medium text-[#09353c] leading-relaxed whitespace-pre-line">
                     {activeMedicine.beginner_summary}
                   </p>
+                  <MedicineBanglaVoicePlayer
+                    key={`${activeMedicine.brand_id}:${activeMedicine.brand_name}`}
+                    text={activeMedicine.beginner_summary}
+                  />
                 </div>
               )}
 
