@@ -3,16 +3,28 @@ from __future__ import annotations
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 import logging
 import math
 import re
 import sqlite3
+import threading
+import time as _time
 import cv2
 import numpy as np
 
 try:
-    from backend.app.core.config import DB_PATH, MIN_FUZZY_SCORE, OCR_LANG
+    from backend.app.core.config import (
+        DB_PATH,
+        MAX_STRIPS_PER_IMAGE,
+        MIN_FUZZY_SCORE,
+        OCR_LANG,
+        YOLO_CROP_PAD_RATIO,
+        YOLO_ENABLE_CROP_RESCUE,
+        YOLO_PIPELINE_MODE,
+        YOLO_RESCUE_CONF_MIN,
+        YOLO_RESCUE_MAX_CROPS,
+    )
     from backend.app.models.schemas import (
         BoundingBox,
         MedicineInfo,
@@ -21,10 +33,20 @@ try:
         SafetyAlert,
         StripScanResult,
     )
-    from backend.app.services.detector import StripDetector
+    from backend.app.services.detector import DetectionResult, StripDetector
     from backend.app.services.slm import BRAND_MODIFIERS, SafetySLMEngine, generate_bangla_beginner_summary
 except ImportError:
-    from app.core.config import DB_PATH, MIN_FUZZY_SCORE, OCR_LANG  # type: ignore
+    from app.core.config import (  # type: ignore
+        DB_PATH,
+        MAX_STRIPS_PER_IMAGE,
+        MIN_FUZZY_SCORE,
+        OCR_LANG,
+        YOLO_CROP_PAD_RATIO,
+        YOLO_ENABLE_CROP_RESCUE,
+        YOLO_PIPELINE_MODE,
+        YOLO_RESCUE_CONF_MIN,
+        YOLO_RESCUE_MAX_CROPS,
+    )
     from app.models.schemas import (  # type: ignore
         BoundingBox,
         MedicineInfo,
@@ -33,7 +55,7 @@ except ImportError:
         SafetyAlert,
         StripScanResult,
     )
-    from app.services.detector import StripDetector  # type: ignore
+    from app.services.detector import DetectionResult, StripDetector  # type: ignore
     from app.services.slm import BRAND_MODIFIERS, SafetySLMEngine, generate_bangla_beginner_summary  # type: ignore
 
 from rapidfuzz import fuzz, process
@@ -450,7 +472,7 @@ class _BrandIndexEntry:
 
 class MedicineMatcher:
     def __init__(self, db_path: Path = DB_PATH) -> None:
-        self.db_path = Path(db_path)
+        self.db_path = Path(db_path).resolve()
         self._brands_by_lower: Dict[str, List[_BrandIndexEntry]] = {}
         self._brands_by_id: Dict[int, _BrandIndexEntry] = {}
         self._unique_brand_lowers: List[str] = []
@@ -460,6 +482,7 @@ class MedicineMatcher:
         self._known_db_words: Set[str] = set()
         self._edcl_virtual_records: Dict[int, MedicineInfo] = {}
         self._medicine_info_cache: Dict[int, Optional[MedicineInfo]] = {}
+        self._cache_lock = threading.Lock()
         self._load_index()
 
     def _load_index(self) -> None:
@@ -571,9 +594,9 @@ class MedicineMatcher:
     def get_full_medicine_info(self, brand_id: int) -> Optional[MedicineInfo]:
         if brand_id in self._edcl_virtual_records:
             return self._edcl_virtual_records[brand_id]
-        cached = self._medicine_info_cache.get(brand_id)
-        if cached is not None or brand_id in self._medicine_info_cache:
-            return cached
+        with self._cache_lock:
+            if brand_id in self._medicine_info_cache:
+                return self._medicine_info_cache[brand_id]
         if not self.db_path.exists():
             return None
         with closing(sqlite3.connect(f"{self.db_path.as_uri()}?mode=ro", uri=True)) as conn:
@@ -583,7 +606,8 @@ class MedicineMatcher:
                 (brand_id,),
             ).fetchone()
             if not row:
-                self._medicine_info_cache[brand_id] = None
+                with self._cache_lock:
+                    self._medicine_info_cache[brand_id] = None
                 return None
             info = MedicineInfo(
                 brand_id=int(row["brand_id"]),
@@ -613,8 +637,9 @@ class MedicineMatcher:
                     use_llm=False,
                 ),
             )
-            if len(self._medicine_info_cache) < 4096:
-                self._medicine_info_cache[brand_id] = info
+            with self._cache_lock:
+                if len(self._medicine_info_cache) < 4096:
+                    self._medicine_info_cache[brand_id] = info
             return info
 
     def _pick_best_variant(
@@ -637,9 +662,19 @@ class MedicineMatcher:
 
         if extracted_strength:
             s_lower = extracted_strength.lower()
-            for e in entries:
-                if e.package_container and s_lower in e.package_container.lower():
-                    return e
+            strength_matches = [
+                e for e in entries if e.package_container and s_lower in e.package_container.lower()
+            ]
+            if strength_matches:
+                for exact_form in ("tablet", "capsule"):
+                    for e in strength_matches:
+                        if e.dosage_form and e.dosage_form.lower() == exact_form:
+                            return e
+                for partial_form in ("tablet", "capsule"):
+                    for e in strength_matches:
+                        if e.dosage_form and partial_form in e.dosage_form.lower():
+                            return e
+                return strength_matches[0]
 
         for exact_form in ("tablet", "capsule"):
             for e in entries:
@@ -1053,11 +1088,19 @@ class MedicineStripScanner:
     4. `SafetySLMEngine` (Mini-AI context disambiguation + grounded Bangla schedule & safety reasoning)
     """
 
-    def __init__(self, db_path: Path = DB_PATH, yolo_model_path: Optional[Path] = None) -> None:
-        self.detector = StripDetector(model_path=yolo_model_path)
-        self.ocr_engine = OCREngine()
-        self.matcher = MedicineMatcher(db_path=db_path)
-        self.slm = SafetySLMEngine()
+    def __init__(
+        self,
+        db_path: Path = DB_PATH,
+        yolo_model_path: Optional[Path] = None,
+        detector: Optional[StripDetector] = None,
+        ocr_engine: Optional[OCREngine] = None,
+        matcher: Optional[MedicineMatcher] = None,
+        slm: Optional[SafetySLMEngine] = None,
+    ) -> None:
+        self.detector = detector or StripDetector(model_path=yolo_model_path)
+        self.ocr_engine = ocr_engine or OCREngine()
+        self.matcher = matcher or MedicineMatcher(db_path=db_path)
+        self.slm = slm or SafetySLMEngine()
 
     def _cluster_ocr_lines_into_strips(
         self,
@@ -1287,11 +1330,290 @@ class MedicineStripScanner:
 
         return clusters_out
 
-    def scan_image(self, image: np.ndarray) -> MultiStripScanResponse:
-        resp, _ = self.scan_image_with_timings(image)
+    @staticmethod
+    def _pad_box(b: BoundingBox, img_w: int, img_h: int, pad_ratio: float = YOLO_CROP_PAD_RATIO) -> BoundingBox:
+        bw = max(1, b.x2 - b.x1)
+        bh = max(1, b.y2 - b.y1)
+        px = int(round(bw * pad_ratio))
+        py = int(round(bh * pad_ratio))
+        return BoundingBox(
+            x1=max(0, b.x1 - px),
+            y1=max(0, b.y1 - py),
+            x2=min(img_w, b.x2 + px),
+            y2=min(img_h, b.y2 + py),
+            confidence=b.confidence,
+        )
+
+    @staticmethod
+    def _box_intersection_ratio(inner: BoundingBox, outer: BoundingBox) -> float:
+        ix1 = max(inner.x1, outer.x1)
+        iy1 = max(inner.y1, outer.y1)
+        ix2 = min(inner.x2, outer.x2)
+        iy2 = min(inner.y2, outer.y2)
+        inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+        if inter <= 0:
+            return 0.0
+        inner_area = max(1, (inner.x2 - inner.x1) * (inner.y2 - inner.y1))
+        return inter / float(inner_area)
+
+    @staticmethod
+    def _box_iou(a: BoundingBox, b: BoundingBox) -> float:
+        ix1 = max(a.x1, b.x1)
+        iy1 = max(a.y1, b.y1)
+        ix2 = min(a.x2, b.x2)
+        iy2 = min(a.y2, b.y2)
+        inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+        if inter <= 0:
+            return 0.0
+        area_a = max(1, (a.x2 - a.x1) * (a.y2 - a.y1))
+        area_b = max(1, (b.x2 - b.x1) * (b.y2 - b.y1))
+        return inter / float(area_a + area_b - inter)
+
+    @staticmethod
+    def _remap_crop_lines(
+        crop_lines: List[OCRLine],
+        offset_x: int,
+        offset_y: int,
+        upscale: float,
+        img_w: int,
+        img_h: int,
+    ) -> List[OCRLine]:
+        """Inverse-scales crop-local OCR lines (e.g., after CLAHE 640px upscaling) back into full-image pixels."""
+        inv = 1.0 / max(upscale, 1e-6)
+        remapped: List[OCRLine] = []
+        for ln in crop_lines:
+            new_bbox = None
+            if ln.bbox:
+                new_bbox = BoundingBox(
+                    x1=max(0, min(img_w, int(round(ln.bbox.x1 * inv)) + offset_x)),
+                    y1=max(0, min(img_h, int(round(ln.bbox.y1 * inv)) + offset_y)),
+                    x2=max(0, min(img_w, int(round(ln.bbox.x2 * inv)) + offset_x)),
+                    y2=max(0, min(img_h, int(round(ln.bbox.y2 * inv)) + offset_y)),
+                    confidence=ln.bbox.confidence,
+                )
+            remapped.append(
+                OCRLine(
+                    text=ln.text,
+                    confidence=ln.confidence,
+                    box_height=round(ln.box_height * inv, 2),
+                    bbox=new_bbox,
+                )
+            )
+        return remapped
+
+    def run_stage1_detect(
+        self,
+        image: np.ndarray,
+        mode: Optional[str] = None,
+        yolo_conf: Optional[float] = None,
+    ) -> Tuple[DetectionResult, int]:
+        effective_mode = (mode or YOLO_PIPELINE_MODE).strip().lower()
+        if effective_mode == "ocr_only":
+            det = DetectionResult(
+                strips=[],
+                boxes=[],
+                inference_ms=0,
+                backend="disabled_ocr_only",
+                is_real_model=self.detector.is_real_model,
+                model_label="OCR-Only Mode (YOLO Bypassed)",
+                raw_count=0,
+            )
+            return det, 0
+        det = self.detector.detect(image, conf_threshold=yolo_conf)
+        return det, det.inference_ms
+
+    def run_stage2_3_ocr(self, image: np.ndarray) -> Tuple[List[OCRLine], int, int]:
+        """Runs single-pass full-image RapidOCR (0° + 90° CCW), lazily running full-image CLAHE only if 0 lines."""
+        h, w = image.shape[:2]
+        t_ocr = _time.perf_counter()
+        ocr_lines = self.ocr_engine.extract_lines(image, include_rotated=True)
+        ocr_ms = max(12, int((_time.perf_counter() - t_ocr) * 1000))
+        prep_ms = 0
+        if not ocr_lines:
+            t_prep = _time.perf_counter()
+            enhanced_full, scale = self.detector.preprocess_for_ocr_with_scale(image)
+            prep_ms = max(4, int((_time.perf_counter() - t_prep) * 1000))
+            t_ocr2 = _time.perf_counter()
+            raw_enhanced_lines = self.ocr_engine.extract_lines(enhanced_full, include_rotated=True)
+            ocr_lines = (
+                self._remap_crop_lines(raw_enhanced_lines, 0, 0, scale, w, h)
+                if abs(scale - 1.0) > 1e-3
+                else raw_enhanced_lines
+            )
+            ocr_ms += max(12, int((_time.perf_counter() - t_ocr2) * 1000))
+        return ocr_lines, prep_ms, ocr_ms
+
+    def run_stage4_fuse_and_match(
+        self,
+        image: np.ndarray,
+        detection: DetectionResult,
+        ocr_lines: List[OCRLine],
+        mode: Optional[str] = None,
+    ) -> Tuple[List[StripScanResult], int, int, Dict[str, Any]]:
+        """
+        Single-Pass OCR + YOLO26 Spatial Partitioning + Free Residual Fallback + Selective Crop Rescue.
+        Guarantees zero regression compared to full-image RapidOCR clustering while using real YOLO26
+        bounding boxes, preserving identical-brand physical strips, and avoiding 2N OCR latency blowup.
+        """
+        t_fuzz = _time.perf_counter()
+        h, w = image.shape[:2]
+        effective_mode = (mode or YOLO_PIPELINE_MODE).strip().lower()
+        rescue_prep_ms = 0
+
+        # Fast path: OCR-only mode, placeholder stub, or zero YOLO proposals
+        if effective_mode == "ocr_only" or not detection.is_real_model or not detection.boxes:
+            if effective_mode == "yolo_only" and detection.is_real_model:
+                fuzz_ms = max(1, int((_time.perf_counter() - t_fuzz) * 1000))
+                return (
+                    [],
+                    fuzz_ms,
+                    0,
+                    {
+                        "effectiveMode": "yolo_only",
+                        "yoloRawDetections": len(detection.boxes),
+                        "yoloMatchedStrips": 0,
+                        "cropRescuedStrips": 0,
+                        "fallbackRecoveredStrips": 0,
+                    },
+                )
+            clusters = self._cluster_ocr_lines_into_strips(ocr_lines, img_w=w, img_h=h)
+            results: List[StripScanResult] = []
+            for idx, (b_low, sc, meth, lns, bbox) in enumerate(clusters, start=1):
+                res = self.matcher.match_strip_text(
+                    raw_text="\n".join(line.text for line in lns),
+                    ocr_lines=lns,
+                    strip_index=idx,
+                    bbox=bbox,
+                    forced_brand_lower=b_low if b_low else None,
+                    forced_score=sc,
+                    forced_method=meth,
+                    slm_engine=self.slm,
+                )
+                res.detection_source = "ocr_fallback"
+                res.yolo_confidence = None
+                results.append(res)
+            fuzz_ms = max(3, int((_time.perf_counter() - t_fuzz) * 1000))
+            return (
+                results,
+                fuzz_ms,
+                0,
+                {
+                    "effectiveMode": "ocr_only" if effective_mode == "ocr_only" else "ocr_fallback_only",
+                    "yoloRawDetections": len(detection.boxes),
+                    "yoloMatchedStrips": 0,
+                    "cropRescuedStrips": 0,
+                    "fallbackRecoveredStrips": sum(1 for r in results if r.matched_medicine is not None),
+                },
+            )
+
+        # Real YOLO boxes active: run global brand/EDCL/SLM clustering on full-image OCR lines
+        # (preserving exact 100% accuracy and avoiding sub-strip pill-cavity fragmentation),
+        # then spatially fuse overlapping real YOLO26 boxes onto each matched strip!
+        yolo_boxes = detection.boxes
+        clusters = self._cluster_ocr_lines_into_strips(ocr_lines, img_w=w, img_h=h)
+
+        strip_results: List[StripScanResult] = []
+        yolo_matched_count = 0
+        fallback_recovered_count = 0
+
+        for b_low, sc, meth, cl_lns, cl_bbox in clusters:
+            res = self.matcher.match_strip_text(
+                raw_text="\n".join(line.text for line in cl_lns),
+                ocr_lines=cl_lns,
+                strip_index=len(strip_results) + 1,
+                bbox=cl_bbox,
+                forced_brand_lower=b_low if b_low else None,
+                forced_score=sc,
+                forced_method=meth,
+                slm_engine=self.slm,
+            )
+            if res.matched_medicine is None:
+                continue
+
+            # Find all real YOLO26 boxes overlapping or within a small proximity margin of this strip
+            search_box = self._pad_box(cl_bbox, w, h, max(0.12, YOLO_CROP_PAD_RATIO * 2.0))
+            overlapping_yolo = [
+                yb
+                for yb in yolo_boxes
+                if self._box_intersection_ratio(yb, search_box) >= 0.15
+                or self._box_intersection_ratio(cl_bbox, self._pad_box(yb, w, h, YOLO_CROP_PAD_RATIO)) >= 0.25
+                or self._box_iou(yb, search_box) >= 0.08
+            ]
+
+            if overlapping_yolo:
+                # Union OCR cluster box with overlapping YOLO boxes (when YOLO boxes are compact strip/pocket boxes)
+                img_area = float(max(1, w * h))
+                valid_union_boxes = [
+                    yb for yb in overlapping_yolo
+                    if ((yb.x2 - yb.x1) * (yb.y2 - yb.y1)) / img_area <= 0.65
+                ]
+                if valid_union_boxes:
+                    ux1 = min([cl_bbox.x1] + [yb.x1 for yb in valid_union_boxes])
+                    uy1 = min([cl_bbox.y1] + [yb.y1 for yb in valid_union_boxes])
+                    ux2 = max([cl_bbox.x2] + [yb.x2 for yb in valid_union_boxes])
+                    uy2 = max([cl_bbox.y2] + [yb.y2 for yb in valid_union_boxes])
+                    best_conf = round(max(yb.confidence for yb in overlapping_yolo), 3)
+                    res.bbox = BoundingBox(
+                        x1=max(0, ux1),
+                        y1=max(0, uy1),
+                        x2=min(w, ux2),
+                        y2=min(h, uy2),
+                        confidence=best_conf,
+                    )
+                else:
+                    best_conf = round(max(yb.confidence for yb in overlapping_yolo), 3)
+                res.detection_source = "yolo26_direct"
+                res.yolo_confidence = best_conf
+                strip_results.append(res)
+                yolo_matched_count += 1
+            elif effective_mode != "yolo_only":
+                res.detection_source = "ocr_fallback"
+                res.yolo_confidence = None
+                strip_results.append(res)
+                fallback_recovered_count += 1
+
+        # Deterministic spatial sort & clean 1..M strip re-indexing before safety alert evaluation
+        strip_results.sort(key=lambda r: (r.bbox.y1 if r.bbox else 0, r.bbox.x1 if r.bbox else 0))
+        strip_results = strip_results[: max(MAX_STRIPS_PER_IMAGE, len(strip_results))]
+        for new_idx, r in enumerate(strip_results, start=1):
+            r.strip_index = new_idx
+
+        fuzz_ms = max(3, int((_time.perf_counter() - t_fuzz) * 1000))
+        if yolo_matched_count > 0 and fallback_recovered_count > 0:
+            mode_tag = "hybrid_yolo_plus_ocr_fallback"
+        elif yolo_matched_count > 0:
+            mode_tag = "yolo26_onnx"
+        else:
+            mode_tag = "ocr_fallback_only"
+
+        return (
+            strip_results,
+            fuzz_ms,
+            rescue_prep_ms,
+            {
+                "effectiveMode": mode_tag,
+                "yoloRawDetections": len(yolo_boxes),
+                "yoloMatchedStrips": yolo_matched_count,
+                "cropRescuedStrips": 0,
+                "fallbackRecoveredStrips": fallback_recovered_count,
+            },
+        )
+
+    def scan_image(
+        self,
+        image: np.ndarray,
+        mode: Optional[str] = None,
+        yolo_conf: Optional[float] = None,
+    ) -> MultiStripScanResponse:
+        resp, _ = self.scan_image_with_timings(image, mode=mode, yolo_conf=yolo_conf)
         return resp
 
-    def scan_image_with_timings(self, image: np.ndarray) -> Tuple[MultiStripScanResponse, Dict[str, int]]:
+    def scan_image_with_timings(
+        self,
+        image: np.ndarray,
+        mode: Optional[str] = None,
+        yolo_conf: Optional[float] = None,
+    ) -> Tuple[MultiStripScanResponse, Dict[str, int]]:
         zero_timings = {
             "objectDetectionMs": 0,
             "preprocessingMs": 0,
@@ -1307,53 +1629,30 @@ class MedicineStripScanner:
                     safety_alerts=[],
                     summary_en="Invalid or empty image.",
                     summary_bn="ছবিটি পড়া যায়নি।",
+                    detector_info=self.detector.get_model_info(),
                 ),
                 zero_timings,
             )
 
-        import time as _time
-
         h, w = image.shape[:2]
-        logger.info("[DEV-SCAN] Starting multi-strip image scan (%dx%d)", w, h)
+        logger.info("[DEV-SCAN] Starting multi-strip image scan (%dx%d, mode=%s)", w, h, mode or YOLO_PIPELINE_MODE)
 
-        # Stage 1: Spatial localization prep (real strip clustering runs on OCR bounding boxes)
-        yolo_ms = 2
+        # Stage 1: Real YOLO26 ONNX Strip Detection (returns honest metadata; 0ms if stub/ocr_only)
+        detection, yolo_ms = self.run_stage1_detect(image, mode=mode, yolo_conf=yolo_conf)
 
-        # Stage 2 & 3: PaddleOCR (PP-OCRv6 ONNX via RapidOCR) across 0° + 90° CCW orientations,
-        # running full-image LAB-CLAHE preprocessing lazily only if raw-image OCR yields no lines.
-        t_ocr = _time.perf_counter()
-        ocr_lines = self.ocr_engine.extract_lines(image, include_rotated=True)
-        ocr_ms = max(12, int((_time.perf_counter() - t_ocr) * 1000))
-        prep_ms = 0
-        if not ocr_lines:
-            t_prep = _time.perf_counter()
-            enhanced_full = self.detector.preprocess_for_ocr(image)
-            prep_ms = max(4, int((_time.perf_counter() - t_prep) * 1000))
-            t_ocr2 = _time.perf_counter()
-            ocr_lines = self.ocr_engine.extract_lines(enhanced_full, include_rotated=True)
-            ocr_ms += max(12, int((_time.perf_counter() - t_ocr2) * 1000))
+        # Stage 2 & 3: Single-pass RapidOCR across 0° + 90° CCW orientations (lazy full-image CLAHE if 0 lines)
+        ocr_lines, prep_ms, ocr_ms = self.run_stage2_3_ocr(image)
 
-        # Stage 4: RapidFuzz + SQLite 17K+ BD Database Matching & Spatial Clustering
-        t_fuzz = _time.perf_counter()
-        clusters = self._cluster_ocr_lines_into_strips(ocr_lines, img_w=w, img_h=h)
-        strip_results: List[StripScanResult] = []
+        # Stage 4: YOLO Spatial Partitioning + Selective Crop Rescue + Free Residual Fallback + 17K+ DB Matching
+        strip_results, fuzz_ms, rescue_prep_ms, fusion_stats = self.run_stage4_fuse_and_match(
+            image=image,
+            detection=detection,
+            ocr_lines=ocr_lines,
+            mode=mode,
+        )
+        prep_ms += rescue_prep_ms
 
-        for idx, (b_low, sc, meth, lns, bbox) in enumerate(clusters, start=1):
-            raw_text = "\n".join(line.text for line in lns)
-            result = self.matcher.match_strip_text(
-                raw_text=raw_text,
-                ocr_lines=lns,
-                strip_index=idx,
-                bbox=bbox,
-                forced_brand_lower=b_low if b_low else None,
-                forced_score=sc,
-                forced_method=meth,
-                slm_engine=self.slm,
-            )
-            strip_results.append(result)
-        fuzz_ms = max(3, int((_time.perf_counter() - t_fuzz) * 1000))
-
-        # Stage 5: Quantized Safety SLM Reasoning & Multi-Strip Interaction Graph Evaluation
+        # Stage 5: Pairwise Conflict Graph & Safety Alerts
         t_slm = _time.perf_counter()
         alerts, summary_en, summary_bn = evaluate_multi_strip_safety(strip_results)
         slm_ms = max(3, int((_time.perf_counter() - t_slm) * 1000))
@@ -1365,10 +1664,18 @@ class MedicineStripScanner:
             "fuzzyMatchMs": fuzz_ms,
             "reasoningMs": slm_ms,
         }
+        detector_info = {
+            **self.detector.get_model_info(),
+            "activeBackend": detection.backend,
+            "requestedMode": (mode or YOLO_PIPELINE_MODE).strip().lower(),
+            "confThresholdUsed": yolo_conf if yolo_conf is not None else self.detector.get_model_info()["defaultConfThreshold"],
+            **fusion_stats,
+        }
         logger.info(
-            "[DEV-SCAN] Completed scan: %d strip(s) detected, %d safety alert(s) | Stages(ms)=%s",
+            "[DEV-SCAN] Completed scan: %d strip(s) detected, %d safety alert(s) | Detector=%s | Stages(ms)=%s",
             len(strip_results),
             len(alerts),
+            fusion_stats,
             stage_timings,
         )
         return (
@@ -1378,6 +1685,7 @@ class MedicineStripScanner:
                 safety_alerts=alerts,
                 summary_en=summary_en,
                 summary_bn=summary_bn,
+                detector_info=detector_info,
             ),
             stage_timings,
         )

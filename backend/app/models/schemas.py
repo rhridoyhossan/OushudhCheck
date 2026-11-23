@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -88,6 +88,11 @@ class StripScanResult(BaseModel):
     match_method: Optional[str] = None
     matched_medicine: Optional[MedicineInfo] = None
     alternatives: List[MedicineInfo] = Field(default_factory=list)
+    detection_source: str = Field(
+        default="ocr_fallback",
+        description="'yolo26_direct' | 'yolo26_crop_rescue' | 'yolo26_split' | 'ocr_fallback'",
+    )
+    yolo_confidence: Optional[float] = None
 
 
 class SafetyAlert(BaseModel):
@@ -106,6 +111,7 @@ class MultiStripScanResponse(BaseModel):
     safety_alerts: List[SafetyAlert] = Field(default_factory=list)
     summary_en: str
     summary_bn: str
+    detector_info: Optional[Dict[str, Any]] = None
 
 
 class TextExtractRequest(BaseModel):

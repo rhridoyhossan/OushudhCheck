@@ -24,6 +24,9 @@ export interface BoundingBox {
   dosageForm?: string;
   manufacturer: string;
   confidence: number;
+  ocrConfidence?: number;
+  yoloConfidence?: number | null;
+  detectionSource?: string;
   // Normalized coordinates (0-100 percentage)
   x: number;
   y: number;
@@ -72,6 +75,8 @@ export interface TransparencyEvidenceItem {
   fuzzyMatchScore: number;
   matchMethod: string;
   confidencePct: number;
+  yoloConfidencePct?: number | null;
+  detectionSource?: string;
   bboxCoords: {
     x1: number;
     y1: number;
@@ -96,11 +101,29 @@ export interface SafetyEdgeItem {
   explanationBn: string;
 }
 
+export interface DetectorRuntimeInfo {
+  modelLabel?: string;
+  variant?: string;
+  fileName?: string;
+  fileSizeMb?: number;
+  isRealModel?: boolean;
+  status?: string;
+  outputFormat?: string;
+  effectiveMode?: string;
+  requestedMode?: string;
+  confThresholdUsed?: number;
+  yoloRawDetections?: number;
+  yoloMatchedStrips?: number;
+  cropRescuedStrips?: number;
+  fallbackRecoveredStrips?: number;
+}
+
 export interface TransparencyInspectorData {
   sourceLabel: string;
   totalTurnaroundMs: number;
   wallClockMs?: number;
   activeDetector: string;
+  detectorInfo?: DetectorRuntimeInfo;
   activeOcrEngine: string;
   activeReasoningMode: string;
   stages: TransparencyStageTiming[];

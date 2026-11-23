@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import re
 import tempfile
 import threading
 import uuid
@@ -94,6 +95,29 @@ def transcribe_bangla_audio(audio_path: Path) -> Optional[str]:
         return None
 
 
+_NUMERIC_RANGE_RE = re.compile(
+    r"([০-৯0-9]+(?:\.[০-৯0-9]+)?)\s*[-–—]\s*([০-৯0-9]+(?:\.[০-৯0-9]+)?)"
+)
+_TTS_STRIP_RE = re.compile(r"[💊⚠️🚨✅📖🔍🔊🎤🗣️⏳•*#_`~<>]+")
+
+
+def normalize_bangla_tts_text(text: str) -> str:
+    """
+    Normalizes Bangla/English clinical text before Edge TTS synthesis so numeric ranges
+    like '৩-৪' or '4-6' are spoken naturally as '৩ থেকে ৪' / '4 থেকে 6' instead of 'minus',
+    and punctuation/symbols produce smooth pauses.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+    cleaned = _NUMERIC_RANGE_RE.sub(r"\1 থেকে \2", cleaned)
+    cleaned = _TTS_STRIP_RE.sub(" ", cleaned)
+    cleaned = cleaned.replace("—", ", ").replace("–", " থেকে ").replace("|", ", ")
+    cleaned = cleaned.replace("()", "")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
 async def synthesize_bangla_speech(
     text: str,
     voice: str = DEFAULT_BANGLA_VOICE,
@@ -103,7 +127,7 @@ async def synthesize_bangla_speech(
     Synthesizes natural Bangla speech (.mp3) using Microsoft Edge TTS (`edge-tts`).
     Caches generated audio files by text hash for fast replay in web and Telegram bot.
     """
-    cleaned = (text or "").strip()
+    cleaned = normalize_bangla_tts_text(text)
     if not cleaned:
         return None
 

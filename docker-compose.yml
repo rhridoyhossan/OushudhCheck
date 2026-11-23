@@ -61,6 +61,10 @@ services:
         required: false
     environment:
       - MEDICINES_DB_PATH=/app/data/processed/medicines.db
+      - YOLO_MODEL_PATH=/app/data/processed/yolo_strips.onnx
+      - YOLO_PIPELINE_MODE=${YOLO_PIPELINE_MODE:-hybrid_fusion}
+      - YOLO_CONF_THRESHOLD=${YOLO_CONF_THRESHOLD:-0.22}
+      - YOLO_ORT_THREADS=${YOLO_ORT_THREADS:-4}
       - SLM_MODEL_NAME=${SLM_MODEL_NAME:-oushudhcheck-gemma3-1b}
       - SLM_API_URL=http://slm:8081/v1/chat/completions
       - SLM_MAX_TOKENS=${SLM_MAX_TOKENS:-768}
@@ -110,6 +114,10 @@ services:
         required: false
     environment:
       - MEDICINES_DB_PATH=/app/data/processed/medicines.db
+      - YOLO_MODEL_PATH=/app/data/processed/yolo_strips.onnx
+      - YOLO_PIPELINE_MODE=${YOLO_PIPELINE_MODE:-hybrid_fusion}
+      - YOLO_CONF_THRESHOLD=${YOLO_CONF_THRESHOLD:-0.22}
+      - YOLO_ORT_THREADS=${YOLO_ORT_THREADS:-4}
       - SLM_MODEL_NAME=${SLM_MODEL_NAME:-oushudhcheck-gemma3-1b}
       - SLM_API_URL=http://slm:8081/v1/chat/completions
       - SLM_MAX_TOKENS=${SLM_MAX_TOKENS:-768}
