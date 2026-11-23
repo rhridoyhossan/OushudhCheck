@@ -169,5 +169,5 @@ We believe understanding medicine should not require advanced medical knowledge 
 ---
 
 <p align="center">
-  <strong>OushudhCheck — Know Your Medicines. Protect Your Health.</strong>
+  <strong>OushudhCheck: Know Your Medicines. Protect Your Health.</strong>
 </p>

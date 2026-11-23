@@ -88,7 +88,7 @@ export function AboutTeamSection() {
           </h2>
 
           <p className="mt-2.5 text-xs sm:text-sm text-[#46737a] leading-relaxed">
-            Meet our OushudhCheck team — a synergy of AI engineering, creativity,
+            Meet our OushudhCheck team: a synergy of AI engineering, creativity,
             and dedication, crafting medication safety together with passion and
             innovation.
           </p>

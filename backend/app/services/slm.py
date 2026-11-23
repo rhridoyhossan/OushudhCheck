@@ -80,11 +80,11 @@ _ORAL_PHRASE_RE = re.compile(
 def _get_non_oral_route_rule(dosage_form: str) -> Optional[str]:
     form_low = (dosage_form or "").strip().lower()
     if "suppository" in form_low:
-        return "এটি একটি সাপোজিটরি, যা পায়ুপথে ব্যবহার করতে হয় — মুখে খাওয়া যাবে না। চিকিৎসকের নির্ধারিত মাত্রা অনুযায়ী ব্যবহার করুন।"
+        return "এটি একটি সাপোজিটরি, যা পায়ুপথে ব্যবহার করতে হয়: মুখে খাওয়া যাবে না। চিকিৎসকের নির্ধারিত মাত্রা অনুযায়ী ব্যবহার করুন।"
     if any(k in form_low for k in ("cream", "ointment", "gel", "lotion", "shampoo", "spray", "paste")):
-        return "এটি বাহ্যিক ব্যবহারের ওষুধ; আক্রান্ত স্থানে পরিষ্কার হাতে পাতলা করে লাগাতে হয় — মুখে খাওয়া যাবে না।"
+        return "এটি বাহ্যিক ব্যবহারের ওষুধ; আক্রান্ত স্থানে পরিষ্কার হাতে পাতলা করে লাগাতে হয়: মুখে খাওয়া যাবে না।"
     if any(k in form_low for k in ("drop", "ophthalmic", "otic", "nasal")):
-        return "এটি ড্রপ হিসেবে ব্যবহার্য; চিকিৎসকের নির্ধারিত ফোঁটা অনুযায়ী নির্দিষ্ট স্থানে প্রয়োগ করুন — মুখে খাওয়া যাবে না।"
+        return "এটি ড্রপ হিসেবে ব্যবহার্য; চিকিৎসকের নির্ধারিত ফোঁটা অনুযায়ী নির্দিষ্ট স্থানে প্রয়োগ করুন: মুখে খাওয়া যাবে না।"
     if "injection" in form_low or "infusion" in form_low:
         return "এটি একটি ইনজেকশন, যা শুধুমাত্র চিকিৎসক বা প্রশিক্ষিত নার্সের তত্ত্বাবধানে প্রয়োগ করতে হবে।"
     if "inhaler" in form_low or "nebul" in form_low:
@@ -411,11 +411,11 @@ def generate_bangla_beginner_summary(
 
     # Override administration route if dosage form is NOT an oral tablet/capsule
     if is_suppository:
-        rule_bn = "এটি একটি সাপোজিটরি, যা পায়ুপথে ব্যবহার করতে হয় — মুখে খাওয়া যাবে না। চিকিৎসকের নির্ধারিত মাত্রা ও সময়ের ব্যবধান অনুযায়ী ব্যবহার করুন।"
+        rule_bn = "এটি একটি সাপোজিটরি, যা পায়ুপথে ব্যবহার করতে হয়: মুখে খাওয়া যাবে না। চিকিৎসকের নির্ধারিত মাত্রা ও সময়ের ব্যবধান অনুযায়ী ব্যবহার করুন।"
     elif is_topical:
-        rule_bn = "এটি বাহ্যিক ব্যবহারের ওষুধ; আক্রান্ত স্থানে পরিষ্কার হাতে পাতলা করে লাগান — মুখে খাওয়া যাবে না।"
+        rule_bn = "এটি বাহ্যিক ব্যবহারের ওষুধ; আক্রান্ত স্থানে পরিষ্কার হাতে পাতলা করে লাগান: মুখে খাওয়া যাবে না।"
     elif is_drop:
-        rule_bn = "এটি ড্রপ হিসেবে ব্যবহার্য; চিকিৎসকের নির্ধারিত ফোঁটা অনুযায়ী নির্দিষ্ট স্থানে প্রয়োগ করুন — মুখে খাওয়া যাবে না।"
+        rule_bn = "এটি ড্রপ হিসেবে ব্যবহার্য; চিকিৎসকের নির্ধারিত ফোঁটা অনুযায়ী নির্দিষ্ট স্থানে প্রয়োগ করুন: মুখে খাওয়া যাবে না।"
     elif is_injection:
         rule_bn = "এটি একটি ইনজেকশন, যা শুধুমাত্র চিকিৎসক বা প্রশিক্ষিত নার্সের তত্ত্বাবধানে প্রয়োগ করতে হবে।"
     elif is_inhaler:
@@ -628,64 +628,64 @@ class SafetySLMEngine:
         # Non-oral / route-specific dosage forms must NEVER receive oral tablet/meal instructions
         if "suppository" in form_low:
             return (
-                f"{name_with_str} — এটি একটি সাপোজিটরি (পায়ুপথে ব্যবহার্য), মুখে খাওয়া যাবে না। চিকিৎসকের নির্ধারিত মাত্রায় ব্যবহার করুন।",
+                f"{name_with_str}: এটি একটি সাপোজিটরি (পায়ুপথে ব্যবহার্য), মুখে খাওয়া যাবে না। চিকিৎসকের নির্ধারিত মাত্রায় ব্যবহার করুন।",
                 bangla_summary,
                 "পায়ুপথে ব্যবহার্য (মুখে নয়)",
             )
         if any(k in form_low for k in ("cream", "ointment", "gel", "lotion", "shampoo", "spray", "paste")):
             return (
-                f"{name_with_str} — বাহ্যিক ব্যবহারের ওষুধ; চিকিৎসকের পরামর্শ অনুযায়ী আক্রান্ত স্থানে লাগান (মুখে নয়)।",
+                f"{name_with_str}: বাহ্যিক ব্যবহারের ওষুধ; চিকিৎসকের পরামর্শ অনুযায়ী আক্রান্ত স্থানে লাগান (মুখে নয়)।",
                 bangla_summary,
                 "ত্বকে বাহ্যিক ব্যবহার্য",
             )
         if any(k in form_low for k in ("drop", "ophthalmic", "otic", "nasal")):
             return (
-                f"{name_with_str} — ড্রপ হিসেবে ব্যবহার্য; চিকিৎসকের নির্ধারিত ফোঁটা অনুযায়ী প্রয়োগ করুন।",
+                f"{name_with_str}: ড্রপ হিসেবে ব্যবহার্য; চিকিৎসকের নির্ধারিত ফোঁটা অনুযায়ী প্রয়োগ করুন।",
                 bangla_summary,
                 "ড্রপ (চিকিৎসকের পরামর্শে)",
             )
         if "injection" in form_low or "infusion" in form_low:
             return (
-                f"{name_with_str} — ইনজেকশন; শুধুমাত্র চিকিৎসক বা প্রশিক্ষিত নার্সের মাধ্যমে প্রয়োগ করতে হবে।",
+                f"{name_with_str}: ইনজেকশন; শুধুমাত্র চিকিৎসক বা প্রশিক্ষিত নার্সের মাধ্যমে প্রয়োগ করতে হবে।",
                 bangla_summary,
                 "ইনজেকশন (চিকিৎসকের তত্ত্বাবধানে)",
             )
         if "inhaler" in form_low or "nebul" in form_low:
             return (
-                f"{name_with_str} — ইনহেলার; চিকিৎসকের দেখানো নিয়ম অনুযায়ী শ্বাসের মাধ্যমে গ্রহণ করুন।",
+                f"{name_with_str}: ইনহেলার; চিকিৎসকের দেখানো নিয়ম অনুযায়ী শ্বাসের মাধ্যমে গ্রহণ করুন।",
                 bangla_summary,
                 "শ্বাসের মাধ্যমে (ইনহেলার)",
             )
         if any(k in form_low for k in ("syrup", "suspension", "elixir", "solution")):
             return (
-                f"{name_with_str} — তরল ওষুধ; ভালোভাবে ঝাঁকিয়ে চিকিৎসকের নির্ধারিত মাপনি চামচ অনুযায়ী সেবন করুন।",
+                f"{name_with_str}: তরল ওষুধ; ভালোভাবে ঝাঁকিয়ে চিকিৎসকের নির্ধারিত মাপনি চামচ অনুযায়ী সেবন করুন।",
                 bangla_summary,
                 "মাপনি চামচে সেব্য (চিকিৎসকের পরামর্শে)",
             )
 
         if any(p in gen_low for p in ("omeprazole", "esomeprazole", "pantoprazole", "rabeprazole", "lansoprazole", "dexlansoprazole")):
             timing_tag = "সকাল • রাত (খাবারের ৩০ মি. আগে)"
-            dosage_bn = f"{name_with_str} — ১টি করে দিনে ১ থেকে ২ বার, খাবারের ৩০ মিনিট আগে সেবন করুন।"
+            dosage_bn = f"{name_with_str}: ১টি করে দিনে ১ থেকে ২ বার, খাবারের ৩০ মিনিট আগে সেবন করুন।"
         elif "paracetamol" in gen_low:
             timing_tag = "সকাল • দুপুর • রাত (ভরা পেটে)"
-            dosage_bn = f"{name_with_str} — প্রাপ্তবয়স্কদের জন্য ১টি ট্যাবলেট দিনে ৩ বার ভরা পেটে (অথবা জ্বর/ব্যথায় প্রয়োজনে)।"
+            dosage_bn = f"{name_with_str}: প্রাপ্তবয়স্কদের জন্য ১টি ট্যাবলেট দিনে ৩ বার ভরা পেটে (অথবা জ্বর/ব্যথায় প্রয়োজনে)।"
         elif any(p in gen_low for p in ("naproxen", "ketorolac", "tolfenamic", "ibuprofen", "diclofenac", "aceclofenac", "etoricoxib")):
             timing_tag = "সকাল • রাত (অবশ্যই ভরা পেটে)"
-            dosage_bn = f"{name_with_str} — ব্যথানাশক ওষুধ; গ্যাস্ট্রিকের ঝুঁকি এড়াতে অবশ্যই ভরা পেটে খাবারের পরে সেবন করুন।"
+            dosage_bn = f"{name_with_str}: ব্যথানাশক ওষুধ; গ্যাস্ট্রিকের ঝুঁকি এড়াতে অবশ্যই ভরা পেটে খাবারের পরে সেবন করুন।"
         elif any(p in gen_low for p in ("clonazepam", "diazepam", "alprazolam", "bromazepam", "flunarizine", "sertraline", "pregabalin")):
             timing_tag = "রাত (ঘুমানোর আগে / চিকিৎসকের পরামর্শে)"
-            dosage_bn = f"{name_with_str} — স্নায়ু বা ঘুমের ওষুধ; তন্দ্রাভাব হতে পারে, তাই চিকিৎসকের নির্ধারিত মাত্রায় (সাধারণত রাতে) সেবন করুন।"
+            dosage_bn = f"{name_with_str}: স্নায়ু বা ঘুমের ওষুধ; তন্দ্রাভাব হতে পারে, তাই চিকিৎসকের নির্ধারিত মাত্রায় (সাধারণত রাতে) সেবন করুন।"
         elif any(p in gen_low for p in ("amlodipine", "losartan", "telmisartan", "bisoprolol", "atenolol", "olmesartan")):
             timing_tag = "সকাল (প্রতিদিন নির্দিষ্ট সময়ে)"
-            dosage_bn = f"{name_with_str} — রক্তচাপ নিয়ন্ত্রণের ওষুধ; প্রতিদিন নির্দিষ্ট সময়ে ১টি করে নিয়মিত সেবন করুন।"
+            dosage_bn = f"{name_with_str}: রক্তচাপ নিয়ন্ত্রণের ওষুধ; প্রতিদিন নির্দিষ্ট সময়ে ১টি করে নিয়মিত সেবন করুন।"
         elif "ondansetron" in gen_low or "domperidone" in gen_low:
             timing_tag = "খাবারের আগে (বমি ভাব হলে)"
-            dosage_bn = f"{name_with_str} — বমি বা বমি ভাব প্রতিরোধে খাবারের আগে চিকিৎসকের পরামর্শ অনুযায়ী সেব্য।"
+            dosage_bn = f"{name_with_str}: বমি বা বমি ভাব প্রতিরোধে খাবারের আগে চিকিৎসকের পরামর্শ অনুযায়ী সেব্য।"
         elif "before meal" in dosage_desc_low or "before food" in dosage_desc_low:
             timing_tag = "খাবারের আগে সেব্য"
-            dosage_bn = f"{name_with_str} — খাবারের আগে চিকিৎসকের পরামর্শ অনুযায়ী সেবন করুন।"
+            dosage_bn = f"{name_with_str}: খাবারের আগে চিকিৎসকের পরামর্শ অনুযায়ী সেবন করুন।"
         else:
             timing_tag = "সকাল • রাত (ভরা পেটে)"
-            dosage_bn = f"{name_with_str} — জেনেরিক: {med.generic}। খাবারের পরে চিকিৎসকের পরামর্শ অনুযায়ী সেবন করুন।"
+            dosage_bn = f"{name_with_str}: জেনেরিক: {med.generic}। খাবারের পরে চিকিৎসকের পরামর্শ অনুযায়ী সেবন করুন।"
 
         return dosage_bn, bangla_summary, timing_tag

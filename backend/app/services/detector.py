@@ -198,7 +198,7 @@ def decode_onnx_predictions(
 
     # Case 1: Native YOLO26 end-to-end NMS-free `(1, 300, 6)` (or `(1, max_det, 6)`)
     if arr.shape[2] == 6:
-        preds = arr[0]  # shape (N, 6) — never collapses when N == 1
+        preds = arr[0]  # shape (N, 6): never collapses when N == 1
         confs = preds[:, 4]
         cls_ids = np.rint(preds[:, 5]).astype(np.int32)
         mask = (confs >= conf_threshold) & (cls_ids == 0)

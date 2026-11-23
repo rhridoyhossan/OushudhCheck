@@ -511,7 +511,7 @@ export function MedicineDatabaseDirectory() {
               </button>
             </div>
 
-            {/* Scrollable Modal Body — data-lenis-prevent allows mouse wheel scrolling inside modal */}
+            {/* Scrollable Modal Body: data-lenis-prevent allows mouse wheel scrolling inside modal */}
             <div
               data-lenis-prevent="true"
               onWheel={(e) => e.stopPropagation()}

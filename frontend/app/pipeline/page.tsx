@@ -469,7 +469,7 @@ export default function PipelineInspectorPage() {
                 1. Upload Medicine Strip Photo
               </h2>
               <p className="text-xs text-[#46737a] mt-1">
-                Nothing runs automatically — upload any medicine image and click
+                Nothing runs automatically: upload any medicine image and click
                 Run whenever you want to inspect the full AI pipeline.
               </p>
             </div>

@@ -230,7 +230,7 @@ def _build_safety_edges(
                     "targetBrand": m0.generic,
                     "compoundOrClass": m0.drug_class or m0.generic,
                     "explanationEn": f"Single strip verified against medicines.db ({m0.generic}). No duplicate strip conflict present.",
-                    "explanationBn": f"একক স্ট্রিপ ({b0} — {m0.generic}) ডাটাবেস থেকে যাচাইকৃত। কোনো ডুপ্লিকেট ঝুঁকি নেই।",
+                    "explanationBn": f"একক স্ট্রিপ ({b0}: {m0.generic}) ডাটাবেস থেকে যাচাইকৃত। কোনো ডুপ্লিকেট ঝুঁকি নেই।",
                 }
             )
 

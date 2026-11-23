@@ -4,7 +4,7 @@ import React, { useEffect, useRef } from "react";
 import Image from "next/image";
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
-import { Check, Pill, Globe, MessageCircle, Share2, Shield } from "lucide-react";
+import { Check } from "lucide-react";
 
 gsap.registerPlugin(ScrollTrigger);
 
@@ -81,7 +81,7 @@ export function Footer() {
             </li>
             <li className="flex items-center gap-2">
               <Check className="size-3.5 text-[#0ea86b]" />
-              <span>21K+ BD Generic Index</span>
+              <span>17K+ BD Medicine Index</span>
             </li>
             <li className="flex items-center gap-2">
               <Check className="size-3.5 text-[#0ea86b]" />
@@ -113,23 +113,28 @@ export function Footer() {
           </ul>
         </div>
 
-        {/* Column 4: Social Icons & Hotline Number */}
-        <div className="space-y-4 lg:border-l lg:border-dashed lg:border-teal-300/80 lg:pl-6">
-          <div className="flex items-center gap-2.5">
-            {[Globe, MessageCircle, Share2, Shield, Pill].map((Icon, idx) => (
-              <span
-                key={idx}
-                className="flex items-center justify-center size-7 rounded-full bg-[#0b5563] text-white"
-              >
-                <Icon className="size-3.5" />
-              </span>
-            ))}
-          </div>
-          <div>
-            <p className="text-xs text-[#46737a]">Emergency Hotline</p>
-            <p className="text-lg font-extrabold tracking-tight text-[#09353c] mt-0.5">
-              16263 • 999-BD
-            </p>
+        {/* Column 4: Bangladesh Emergency Hotlines */}
+        <div className="space-y-2.5 lg:border-l lg:border-dashed lg:border-teal-300/80 lg:pl-6">
+          <h4 className="font-bold text-sm text-[#09353c]">
+            Emergency Hotlines (BD)
+          </h4>
+          <div className="space-y-2 text-xs">
+            <div>
+              <p className="font-extrabold text-sm text-[#09353c]">
+                16263: Shastho Batayon
+              </p>
+              <p className="text-[11px] text-[#46737a] leading-snug">
+                24/7 National Health Helpline (DGHS Bangladesh)
+              </p>
+            </div>
+            <div>
+              <p className="font-extrabold text-sm text-[#09353c]">
+                999: National Emergency
+              </p>
+              <p className="text-[11px] text-[#46737a] leading-snug">
+                24/7 Ambulance, Fire &amp; Police Service (Bangladesh)
+              </p>
+            </div>
           </div>
         </div>
       </div>

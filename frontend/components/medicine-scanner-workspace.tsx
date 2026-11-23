@@ -44,6 +44,14 @@ import { toast } from "sonner";
 
 const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
 
+function splitBanglaSummaryLines(script: string): string[] {
+  return (script || "")
+    .replace(/\s*(সতর্কতা\s*:)/g, "\n$1")
+    .split(/(?<=।)\s*|\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 async function resizeImageForUpload(
   input: File | Blob,
   maxDim = 1920
@@ -950,7 +958,7 @@ export function MedicineScannerWorkspace() {
                     </div>
                     <p className="text-[11px] text-teal-100/85">
                       {isVoiceLoading
-                        ? "অন্যান্য তথ্য নিচে দেখানো হয়েছে — ভয়েস অডিও ব্যাকগ্রাউন্ডে প্রস্তুত হচ্ছে..."
+                        ? "অন্যান্য তথ্য নিচে দেখানো হয়েছে: ভয়েস অডিও ব্যাকগ্রাউন্ডে প্রস্তুত হচ্ছে..."
                         : `মোট দৈর্ঘ্য: ${formatAudioTime(audioDuration)} • সম্পন্ন: ${audioProgressPct}%`}
                     </p>
                   </div>
@@ -1004,6 +1012,87 @@ export function MedicineScannerWorkspace() {
                 </div>
               </div>
             </div>
+
+            {/* 1B. BANGLA VOICE GUIDE & LINE-BY-LINE SUMMARY (Matches /pipeline) */}
+            {analysis.banglaVoiceScript && (
+              <div className="rounded-3xl bg-[#f2f9f8] p-5 border border-teal-100 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-teal-200/60 pb-3.5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-xs font-extrabold uppercase tracking-wider text-[#0b5563]">
+                      বাংলা ভয়েস গাইড ও সারসংক্ষেপ (Bangla Summary)
+                    </p>
+                    {isVoiceLoading ? (
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 px-2.5 py-0.5 text-[10px] font-extrabold">
+                        <Loader2 className="size-3 animate-spin text-amber-600" />
+                        ভয়েস অডিও তৈরি হচ্ছে...
+                      </span>
+                    ) : isVoiceReady ? (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 text-[#0ea86b] border border-emerald-200 px-2.5 py-0.5 text-[10px] font-extrabold">
+                        <Check className="size-3 stroke-[3]" />
+                        ভয়েস প্রস্তুত
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-teal-50 text-[#46737a] border border-teal-200 px-2.5 py-0.5 text-[10px] font-extrabold">
+                        ব্রাউজার ভয়েস
+                      </span>
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={toggleBanglaVoice}
+                    className="self-start sm:self-center shrink-0 inline-flex items-center gap-2 rounded-full bg-[#0ea86b] hover:bg-[#0b5563] px-5 py-2 text-xs font-bold text-white shadow-sm transition cursor-pointer"
+                  >
+                    {isPlayingVoice ? (
+                      <>
+                        <Pause className="size-3.5 fill-current" />
+                        <span>Pause</span>
+                      </>
+                    ) : isVoiceLoading ? (
+                      <>
+                        <Loader2 className="size-3.5 animate-spin" />
+                        <span>ভয়েস তৈরি হচ্ছে (তাৎক্ষণিক শুনুন)</span>
+                      </>
+                    ) : (
+                      <>
+                        <Volume2 className="size-4" />
+                        <span>বাংলায় শুনুন</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                <ul className="space-y-2">
+                  {splitBanglaSummaryLines(analysis.banglaVoiceScript).map(
+                    (line, i) => {
+                      const isFirstLine = i === 0;
+                      const isStripLine =
+                        line.startsWith("ওষুধ ") || line.startsWith("স্ট্রিপ");
+                      const isWarningLine = line.startsWith("সতর্কতা");
+                      return (
+                        <li
+                          key={`${i}-${line.slice(0, 16)}`}
+                          className={`flex items-start gap-2.5 text-xs sm:text-sm leading-relaxed ${
+                            isFirstLine
+                              ? "font-extrabold text-[#0b5563]"
+                              : isWarningLine
+                              ? "font-semibold text-amber-900 bg-amber-50/90 rounded-xl px-3.5 py-2 border border-amber-200"
+                              : isStripLine
+                              ? "font-semibold text-[#09353c] bg-white/85 rounded-xl px-3.5 py-2 border border-teal-100/80"
+                              : "font-medium text-[#09353c] pl-1"
+                          }`}
+                        >
+                          {isStripLine && (
+                            <span className="mt-1.5 size-2 rounded-full bg-[#0ea86b] shrink-0" />
+                          )}
+                          <span>{line}</span>
+                        </li>
+                      );
+                    }
+                  )}
+                </ul>
+              </div>
+            )}
 
             {/* 2. CLEANLY ALIGNED STRUCTURED BANGLA GUIDE SUMMARY BOX */}
             <div className="rounded-3xl bg-[#f2f9f8] p-5 border border-teal-100 space-y-3.5">

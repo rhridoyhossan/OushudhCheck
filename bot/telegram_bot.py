@@ -197,11 +197,11 @@ class OushudhCheckTelegramBot:
             "২. 🎤 <b>বাংলা ভয়েস মেসেজ:</b> যেকোনো ওষুধ সম্পর্কে বাংলায় ভয়েস মেসেজ পাঠিয়ে প্রশ্ন করুন।\n"
             "৩. ⌨️ অথবা যেকোনো ওষুধের নাম লিখে পাঠান (যেমন: <code>Napa Extra</code>, <code>Seclo 20</code>, <code>Amdocal 5</code>, <code>Tufnil 200</code>)।\n\n"
             "📌 <b>মেনু কমান্ডসমূহ:</b>\n"
-            "• /help — বিস্তারিত ব্যবহারের নিয়মাবলী\n"
-            "• /guide — স্পষ্ট ছবি তোলার টিপস\n"
-            "• /features — AI পাইপলাইন ও সুবিধাসমূহ\n"
-            "• /safety — জরুরি চিকিৎসা সতর্কতা ও হটলাইন\n"
-            "• /about — প্রজেক্ট ও টিম পরিচিতি"
+            "• /help: বিস্তারিত ব্যবহারের নিয়মাবলী\n"
+            "• /guide: স্পষ্ট ছবি তোলার টিপস\n"
+            "• /features: AI পাইপলাইন ও সুবিধাসমূহ\n"
+            "• /safety: জরুরি চিকিৎসা সতর্কতা ও হটলাইন\n"
+            "• /about: প্রজেক্ট ও টিম পরিচিতি"
         )
         await self.send_text(session, chat_id, welcome)
 
@@ -212,9 +212,9 @@ class OushudhCheckTelegramBot:
             "• একসাথে ১ থেকে ৬টি ওষুধের পাতা সমতল টেবিলে রেখে ছবি পাঠান।\n"
             "• আমি প্রতিটি ওষুধের নাম, মাত্রা (mg), জেনেরিক, খাওয়ার নিয়ম, সহজ বাংলা সারসংক্ষেপ এবং ডুপ্লিকেট/আন্তঃক্রিয়া সতর্কতা বাংলা ভয়েসসহ জানাবো।\n\n"
             "<b>২. টেক্সট লিখে খুঁজুন:</b>\n"
-            "• সরাসরি ওষুধের ব্র্যান্ড বা জেনেরিক নাম লিখুন — যেমন: <code>Napa Extra</code>, <code>Seclo</code>, <code>Omeprazole</code>, <code>Amdocal 5</code>।\n\n"
+            "• সরাসরি ওষুধের ব্র্যান্ড বা জেনেরিক নাম লিখুন: যেমন: <code>Napa Extra</code>, <code>Seclo</code>, <code>Omeprazole</code>, <code>Amdocal 5</code>।\n\n"
             "<b>৩. বাংলা ভয়েস মেসেজ:</b>\n"
-            "• মাইক্রোফোন চেপে ওষুধের নাম বলুন (যেমন: “নাপা এক্সট্রা” বা “সেকলো ২০”) — <b>faster-whisper</b> শুনে উত্তর দেবে।\n\n"
+            "• মাইক্রোফোন চেপে ওষুধের নাম বলুন (যেমন: “নাপা এক্সট্রা” বা “সেকলো ২০”): <b>faster-whisper</b> শুনে উত্তর দেবে।\n\n"
             "👉 স্পষ্ট ছবি তোলার টিপস দেখতে /guide চাপুন।"
         )
         await self.send_text(session, chat_id, msg)
@@ -259,11 +259,11 @@ class OushudhCheckTelegramBot:
 
     async def handle_about(self, session: aiohttp.ClientSession, chat_id: int) -> None:
         msg = (
-            "🏥 <b>OushudhCheck — Know Your Medicines. Protect Your Health.</b>\n\n"
+            "🏥 <b>OushudhCheck: Know Your Medicines. Protect Your Health.</b>\n\n"
             "✨ <b>AI-Powered Medicine Safety &amp; Bangla Voice Assistant</b>\n\n"
             "👨‍💻 <b>Team OushudhCheck:</b>\n"
-            "• <b>Jubayer Ahmed</b> — Frontend &amp; AI Product Engineer\n"
-            "• <b>Ridoy Hossan Rony</b> — Backend &amp; ML Systems Engineer\n\n"
+            "• <b>Jubayer Ahmed</b>: Frontend &amp; AI Product Engineer\n"
+            "• <b>Ridoy Hossan Rony</b>: Backend &amp; ML Systems Engineer\n\n"
             "💡 আমাদের লক্ষ্য: বাংলাদেশে সবার জন্য সহজ বাংলায় নিরাপদ ওষুধ তথ্য ও ভয়েস গাইড নিশ্চিত করা।\n"
             "সাহায্যের জন্য /help বা /guide লিখুন।"
         )
@@ -405,7 +405,7 @@ class OushudhCheckTelegramBot:
             strength = s.extracted_strength or m.package_container or "N/A"
             form = s.detected_dosage_form or m.dosage_form or "Tablet"
             lines_out.append(
-                f"<b>{idx}. {_esc(m.brand_name)}</b> — <code>{_esc(strength)}</code> ({_esc(form)})\n"
+                f"<b>{idx}. {_esc(m.brand_name)}</b>: <code>{_esc(strength)}</code> ({_esc(form)})\n"
                 f"   • <b>জেনেরিক:</b> {_esc(m.generic)}\n"
                 f"   • <b>প্রস্তুতকারক:</b> {_esc(m.manufacturer or 'N/A')}\n"
                 f"   • <b>খাওয়ার সময়সূচী:</b> <code>{_esc(timing_tag)}</code>\n"
@@ -611,7 +611,7 @@ class OushudhCheckTelegramBot:
                 False,
             )
             reply = (
-                f"💊 <b>{_esc(m.brand_name)}</b> — <code>{_esc(strength)}</code> ({_esc(form)})\n"
+                f"💊 <b>{_esc(m.brand_name)}</b>: <code>{_esc(strength)}</code> ({_esc(form)})\n"
                 f"• <b>জেনেরিক:</b> {_esc(m.generic)}\n"
                 f"• <b>শ্রেণী:</b> {_esc(m.drug_class or 'N/A')}\n"
                 f"• <b>প্রস্তুতকারক:</b> {_esc(m.manufacturer or 'N/A')}\n"
@@ -660,7 +660,7 @@ class OushudhCheckTelegramBot:
             strength = r.extracted_strength or m.package_container or "Standard"
             form = r.detected_dosage_form or m.dosage_form or "Tablet"
             lines_out.append(
-                f"<b>{idx}. {_esc(m.brand_name)}</b> — <code>{_esc(strength)}</code> ({_esc(form)})\n"
+                f"<b>{idx}. {_esc(m.brand_name)}</b>: <code>{_esc(strength)}</code> ({_esc(form)})\n"
                 f"   • <b>জেনেরিক:</b> {_esc(m.generic)}\n"
                 f"   • <b>প্রস্তুতকারক:</b> {_esc(m.manufacturer or 'N/A')}\n"
                 f"   • <b>খাওয়ার সময়সূচী:</b> <code>{_esc(timing_tag)}</code>\n"

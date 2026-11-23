@@ -1,4 +1,4 @@
-# OushudhCheck — Agent & Developer Guide (`agent.md`)
+# OushudhCheck: Agent & Developer Guide (`agent.md`)
 
 > **Multi-Strip Medicine Safety Scanner & Bangla Voice Assistant**
 > Healthcare & Accessibility AI Platform.
@@ -134,7 +134,7 @@ Follow these strictly when modifying the codebase:
 
 2. **Thread-Safe & Non-Blocking FastAPI Inference**:
    - `get_scanner()` is a process-wide `@lru_cache(maxsize=1)` singleton. Never store per-request mutable state on `scanner` (use `scanner.scan_image_with_timings(image)` which returns timings per call).
-   - Never run synchronous OpenCV/ONNX/RapidOCR/SQLite work directly inside `async def` handlers — either declare the route as regular `def` or offload with `await run_in_threadpool(...)`.
+   - Never run synchronous OpenCV/ONNX/RapidOCR/SQLite work directly inside `async def` handlers: either declare the route as regular `def` or offload with `await run_in_threadpool(...)`.
    - Enforce upload byte caps (`MAX_UPLOAD_BYTES = 15 MB`) and decoded pixel limits (`MAX_IMAGE_PIXELS = 25_000_000`) on image upload routes.
 
 3. **Clinical Safety & Honest Error Handling**:

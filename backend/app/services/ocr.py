@@ -1052,9 +1052,9 @@ def evaluate_multi_strip_safety(strips: Sequence[StripScanResult]) -> Tuple[List
             assert m is not None
             strength_str = f" {s.extracted_strength}" if s.extracted_strength else ""
             form_str = f" ({s.detected_dosage_form})" if s.detected_dosage_form else ""
-            items_en.append(f"Strip {s.strip_index}: {m.brand_name}{strength_str}{form_str} — Generic: {m.generic}")
+            items_en.append(f"Strip {s.strip_index}: {m.brand_name}{strength_str}{form_str}: Generic: {m.generic}")
             items_bn.append(
-                f"স্ট্রিপ {s.strip_index}: {m.brand_name}{strength_str}{form_str} — জেনেরিক: {m.generic}"
+                f"স্ট্রিপ {s.strip_index}: {m.brand_name}{strength_str}{form_str}: জেনেরিক: {m.generic}"
             )
 
         summary_en = " | ".join(items_en)

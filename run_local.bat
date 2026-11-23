@@ -22,7 +22,7 @@ echo [2/5] Starting Gemma 3 1B Bangla SLM (llama.cpp llama-server) on http://127
 if exist "models\oushudhcheck-gemma3-1b-bn.Q4_K_M.gguf" (
     start "OushudhCheck Gemma 3 1B SLM (Port 8081)" cmd /k "llama-server -m models\oushudhcheck-gemma3-1b-bn.Q4_K_M.gguf --host 127.0.0.1 --port 8081 -c 8192 -np 2 -fa on --cache-reuse 512"
 ) else (
-    echo [WARN] models\oushudhcheck-gemma3-1b-bn.Q4_K_M.gguf not found — backend will use fallback summary mode.
+    echo [WARN] models\oushudhcheck-gemma3-1b-bn.Q4_K_M.gguf not found: backend will use fallback summary mode.
 )
 
 echo [3/5] Starting FastAPI Backend Server on http://localhost:8000 ...
