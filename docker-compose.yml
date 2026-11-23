@@ -1,4 +1,54 @@
 services:
+  # 1. Init Container: Downloads Gemma 3 1B GGUF + system_prompt.txt once from GitHub Releases
+  #    into the shared persistent volume (maps 1:1 to a Kubernetes initContainer + PVC).
+  model-init:
+    image: alpine:3.20
+    container_name: oushudhcheck-model-init
+    environment:
+      - MODEL_DIR=/models
+      - MODEL_FILENAME=oushudhcheck-gemma3-1b-bn.Q4_K_M.gguf
+      - MODEL_RELEASE_URL=${MODEL_RELEASE_URL:-https://github.com/rhridoyhossan/OushudhCheck/releases/latest/download/oushudhcheck_gemma3_1b_deploy.zip}
+    volumes:
+      - oushudhcheck_models:/models
+      - ./scripts/download_model.sh:/usr/local/bin/download_model.sh:ro
+    entrypoint: ["/bin/sh", "-c", "apk add --no-cache curl unzip >/dev/null && sed 's/\\r$//' /usr/local/bin/download_model.sh | sh"]
+    restart: "no"
+
+  # 2. Local Gemma 3 1B Bangla SLM Inference Server (llama.cpp OpenAI-compatible API)
+  slm:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    container_name: oushudhcheck-slm
+    ports:
+      - "8081:8081"
+    volumes:
+      - oushudhcheck_models:/models:ro
+    command:
+      - -m
+      - /models/oushudhcheck-gemma3-1b-bn.Q4_K_M.gguf
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8081"
+      - -c
+      - "8192"
+      - -np
+      - "2"
+      - -fa
+      - "on"
+      - --cache-reuse
+      - "512"
+    depends_on:
+      model-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/health || curl -sf http://127.0.0.1:8081/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  # 3. FastAPI Backend (RapidOCR + RapidFuzz + SQLite 17,191 BD Medicines + Edge TTS)
   backend:
     build:
       context: .
@@ -7,29 +57,48 @@ services:
     ports:
       - "8000:8000"
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       - MEDICINES_DB_PATH=/app/data/processed/medicines.db
+      - SLM_MODEL_NAME=${SLM_MODEL_NAME:-oushudhcheck-gemma3-1b}
+      - SLM_API_URL=http://slm:8081/v1/chat/completions
+      - SLM_MAX_TOKENS=${SLM_MAX_TOKENS:-768}
+      - SLM_TIMEOUT_SEC=${SLM_TIMEOUT_SEC:-30.0}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
     volumes:
       - ./data/processed:/app/data/processed:ro
+      - oushudhcheck_models:/app/models:ro
+    depends_on:
+      slm:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 25s
     restart: unless-stopped
 
+  # 4. Next.js 16 Standalone Frontend Web App
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
     container_name: oushudhcheck-frontend
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
       - INTERNAL_API_URL=http://backend:8000/api/v1
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     restart: unless-stopped
 
+  # 5. Telegram Bot (@OushudhCheck_bot)
   bot:
     build:
       context: .
@@ -37,11 +106,24 @@ services:
     container_name: oushudhcheck-telegram-bot
     command: ["python", "bot/telegram_bot.py"]
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       - MEDICINES_DB_PATH=/app/data/processed/medicines.db
+      - SLM_MODEL_NAME=${SLM_MODEL_NAME:-oushudhcheck-gemma3-1b}
+      - SLM_API_URL=http://slm:8081/v1/chat/completions
+      - SLM_MAX_TOKENS=${SLM_MAX_TOKENS:-768}
+      - SLM_TIMEOUT_SEC=${SLM_TIMEOUT_SEC:-30.0}
     volumes:
       - ./data/processed:/app/data/processed:ro
+      - oushudhcheck_models:/app/models:ro
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+      slm:
+        condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  oushudhcheck_models:
+    name: oushudhcheck_models

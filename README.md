@@ -112,6 +112,18 @@ OushudhCheck combines multiple AI and data-processing components rather than dep
 | Language Generation | Converts structured findings into understandable Bangla |
 | Voice & Delivery | Delivers results through the web app and Telegram |
 
+## Quick Start (One-Command Docker)
+
+Run the entire stack (**Gemma 3 1B auto-downloaded from GitHub Releases** + `llama-server` + FastAPI + Next.js + Telegram Bot) with a single command:
+
+```bash
+docker compose up --build
+```
+
+- **First run**: `model-init` automatically downloads `oushudhcheck_gemma3_1b_deploy.zip` from GitHub Releases into the persistent `oushudhcheck_models` volume and extracts `oushudhcheck-gemma3-1b-bn.Q4_K_M.gguf` + `system_prompt.txt`. Subsequent restarts skip the download.
+- **Services**: Frontend `http://localhost:3000` • Backend API `http://localhost:8000/docs` • Gemma 3 1B SLM `http://localhost:8081`
+- **Kubernetes-ready**: `model-init` maps 1:1 to a Kubernetes `initContainer` writing to a shared `ReadWriteMany` PVC, allowing `slm` and `backend` pods to scale horizontally while mounting `/models` read-only.
+
 ## Project Goals
 
 - Make medicine information more accessible to people in Bangladesh.
