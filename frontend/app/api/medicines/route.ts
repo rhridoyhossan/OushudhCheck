@@ -113,7 +113,8 @@ total = cur.execute(
     params
 ).fetchone()["total"]
 
-prefix_pat = f"{q_clean}%"
+esc_prefix = q_clean.replace("\\\\", "\\\\\\\\").replace("%", "\\\\%").replace("_", "\\\\_")
+prefix_pat = f"{esc_prefix}%"
 rows = cur.execute(
     f"""
     SELECT
@@ -137,7 +138,7 @@ rows = cur.execute(
     ORDER BY
         CASE
             WHEN ? != '' AND b.brand_lower = ? THEN 0
-            WHEN ? != '' AND b.brand_lower LIKE ? THEN 1
+            WHEN ? != '' AND b.brand_lower LIKE ? ESCAPE '\\\\' THEN 1
             ELSE 2
         END,
         b.brand_name ASC

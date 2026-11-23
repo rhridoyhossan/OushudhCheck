@@ -4,7 +4,8 @@ import React, { useEffect, useState, useRef, useCallback } from "react";
 import { Navbar } from "@/components/navbar";
 import { Footer } from "@/components/footer";
 import { AITransparencyInspector } from "@/components/ai-transparency-inspector";
-import { BACKEND_ORIGIN, analyzeMedicineImageStream } from "@/lib/api";
+import { BanglaVoiceWaveform } from "@/components/bangla-voice-waveform";
+import { analyzeMedicineImageStream, fetchBanglaTtsAudioBlob } from "@/lib/api";
 import {
   BoundingBox,
   MedicineDatabaseRecord,
@@ -36,8 +37,8 @@ import { toast } from "sonner";
 const PIPELINE_STAGE_STEPS = [
   {
     step: 1,
-    title: "YOLO26n ONNX Object Detection",
-    titleBn: "ধাপ ১/৬: YOLO26n ONNX স্ট্রিপ ডিটেকশন",
+    title: "YOLO26s ONNX Object Detection",
+    titleBn: "ধাপ ১/৬: YOLO26s ONNX স্ট্রিপ ডিটেকশন",
     desc: "Locating 1–6 blister pack bounding boxes via ONNXRuntime CPUExecutionProvider",
   },
   {
@@ -72,9 +73,19 @@ const PIPELINE_STAGE_STEPS = [
   },
 ];
 
+const EQUALIZER_HEIGHTS = [40, 85, 55, 100, 65, 90, 45, 75, 60, 95, 50, 80];
+
+function formatAudioTime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs.toString().padStart(2, "0")}`;
+}
+
 function splitBanglaLines(script: string): string[] {
-  return script
-    .split(/(?<=।)\s*/)
+  return (script || "")
+    .replace(/\s*(সতর্কতা\s*:)/g, "\n$1")
+    .split(/(?<=।)\s*|\n+/)
     .map((line) => line.trim())
     .filter(Boolean);
 }
@@ -104,7 +115,12 @@ export default function PipelineInspectorPage() {
   const [readyAudioBlobUrl, setReadyAudioBlobUrl] = useState<string | null>(
     null
   );
+  const [readyAudioEl, setReadyAudioEl] = useState<HTMLAudioElement | null>(
+    null
+  );
   const [isPlayingVoice, setIsPlayingVoice] = useState<boolean>(false);
+  const [audioDuration, setAudioDuration] = useState<number>(0);
+  const [audioCurrentTime, setAudioCurrentTime] = useState<number>(0);
   const [activeMedicine, setActiveMedicine] =
     useState<MedicineDatabaseRecord | null>(null);
   const [detectorMode, setDetectorMode] = useState<
@@ -167,6 +183,35 @@ export default function PipelineInspectorPage() {
     };
   }, []);
 
+  const resetVoiceAudioState = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.onloadedmetadata = null;
+      audioRef.current.ondurationchange = null;
+      audioRef.current.ontimeupdate = null;
+      audioRef.current.onplay = null;
+      audioRef.current.onpause = null;
+      audioRef.current.onended = null;
+      audioRef.current.onerror = null;
+      audioRef.current.src = "";
+      audioRef.current = null;
+    }
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+    setReadyAudioBlobUrl(null);
+    setReadyAudioEl(null);
+    setVoiceLoadedForKey(null);
+    setVoiceFailedForKey(null);
+    setAudioDuration(0);
+    setAudioCurrentTime(0);
+    setIsPlayingVoice(false);
+  }, []);
+
+  const handleAudioSeek = useCallback((sec: number) => {
+    setAudioCurrentTime(sec);
+  }, []);
+
   // Pre-fetch Bangla TTS audio asynchronously in background after scan results appear
   useEffect(() => {
     if (!activeVoiceKey || !analysis?.audioUrl) {
@@ -177,18 +222,58 @@ export default function PipelineInspectorPage() {
     const controller = new AbortController();
     const tVoice0 = Date.now();
 
-    const fullAudioUrl = analysis.audioUrl.startsWith("http")
-      ? analysis.audioUrl
-      : `${BACKEND_ORIGIN}${analysis.audioUrl}`;
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
 
-    fetch(fullAudioUrl, { signal: controller.signal })
-      .then((res) => (res.ok ? res.blob() : Promise.reject(new Error("TTS failed"))))
+    fetchBanglaTtsAudioBlob(
+      analysis.banglaVoiceScript || "",
+      analysis.audioUrl,
+      controller.signal
+    )
       .then((blob) => {
         if (cancelled) return;
         const voiceElapsed = Math.max(12, Math.round(Date.now() - tVoice0));
         const objUrl = URL.createObjectURL(blob);
         createdObjUrl = objUrl;
         setReadyAudioBlobUrl(objUrl);
+
+        const audio = new Audio(objUrl);
+        audio.preload = "metadata";
+        audioRef.current = audio;
+        setReadyAudioEl(audio);
+
+        const syncDuration = () => {
+          if (!cancelled && Number.isFinite(audio.duration) && audio.duration > 0) {
+            setAudioDuration(audio.duration);
+          }
+        };
+        audio.onloadedmetadata = syncDuration;
+        audio.ondurationchange = syncDuration;
+        audio.ontimeupdate = () => {
+          if (!cancelled) {
+            setAudioCurrentTime(audio.currentTime || 0);
+          }
+        };
+        audio.onplay = () => {
+          if (!cancelled) setIsPlayingVoice(true);
+        };
+        audio.onpause = () => {
+          if (!cancelled) setIsPlayingVoice(false);
+        };
+        audio.onended = () => {
+          if (!cancelled) {
+            setIsPlayingVoice(false);
+            setAudioCurrentTime(
+              Number.isFinite(audio.duration) ? audio.duration : 0
+            );
+          }
+        };
+        audio.onerror = () => {
+          if (!cancelled) setIsPlayingVoice(false);
+        };
+
         setVoiceLoadedForKey(activeVoiceKey);
         setLiveStageStatuses((prev) => {
           const next = [...prev];
@@ -233,15 +318,26 @@ export default function PipelineInspectorPage() {
       controller.abort();
       if (audioRef.current) {
         audioRef.current.pause();
+        audioRef.current.onloadedmetadata = null;
+        audioRef.current.ondurationchange = null;
+        audioRef.current.ontimeupdate = null;
+        audioRef.current.onplay = null;
+        audioRef.current.onpause = null;
+        audioRef.current.onended = null;
+        audioRef.current.onerror = null;
+        audioRef.current.src = "";
         audioRef.current = null;
       }
+      setReadyAudioEl(null);
+      setIsPlayingVoice(false);
       if (createdObjUrl) {
         URL.revokeObjectURL(createdObjUrl);
       }
     };
-  }, [activeVoiceKey, analysis?.audioUrl]);
+  }, [activeVoiceKey, analysis?.audioUrl, analysis?.banglaVoiceScript]);
 
   const executeUploadedScan = useCallback(async (file: File) => {
+    resetVoiceAudioState();
     setIsRunning(true);
     setActiveStageIdx(0);
     setLiveStageStatuses([
@@ -285,6 +381,9 @@ export default function PipelineInspectorPage() {
         { detectorMode, yoloConf }
       );
       setReadyAudioBlobUrl(null);
+      setReadyAudioEl(null);
+      setAudioDuration(0);
+      setAudioCurrentTime(0);
       setIsPlayingVoice(false);
       setLiveStageStatuses([
         "done",
@@ -323,7 +422,7 @@ export default function PipelineInspectorPage() {
       clearInterval(stageTimer);
       setIsRunning(false);
     }
-  }, [detectorMode, yoloConf]);
+  }, [detectorMode, yoloConf, resetVoiceAudioState]);
 
   const acceptFile = (file: File | undefined | null) => {
     if (!file) return;
@@ -334,6 +433,7 @@ export default function PipelineInspectorPage() {
     if (uploadedPreviewUrl) {
       URL.revokeObjectURL(uploadedPreviewUrl);
     }
+    resetVoiceAudioState();
     setUploadedFile(file);
     setUploadedPreviewUrl(URL.createObjectURL(file));
     setAnalysis(null);
@@ -364,6 +464,7 @@ export default function PipelineInspectorPage() {
     if (uploadedPreviewUrl) {
       URL.revokeObjectURL(uploadedPreviewUrl);
     }
+    resetVoiceAudioState();
     setUploadedFile(null);
     setUploadedPreviewUrl(null);
     setAnalysis(null);
@@ -376,8 +477,6 @@ export default function PipelineInspectorPage() {
       "pending",
     ]);
     setLiveStageTimings([null, null, null, null, null, null]);
-    setReadyAudioBlobUrl(null);
-    setIsPlayingVoice(false);
   };
 
   const handleRunActiveImage = () => {
@@ -393,7 +492,6 @@ export default function PipelineInspectorPage() {
     if (isPlayingVoice) {
       if (audioRef.current) {
         audioRef.current.pause();
-        audioRef.current.currentTime = 0;
       }
       if ("speechSynthesis" in window) {
         window.speechSynthesis.cancel();
@@ -402,13 +500,19 @@ export default function PipelineInspectorPage() {
       return;
     }
 
-    if (readyAudioBlobUrl) {
-      const audio = new Audio(readyAudioBlobUrl);
-      audioRef.current = audio;
+    if (audioRef.current && readyAudioBlobUrl) {
+      if ("speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
+      if (
+        audioDuration > 0 &&
+        audioRef.current.currentTime >= audioDuration - 0.1
+      ) {
+        audioRef.current.currentTime = 0;
+        setAudioCurrentTime(0);
+      }
       setIsPlayingVoice(true);
-      audio.onended = () => setIsPlayingVoice(false);
-      audio.onerror = () => setIsPlayingVoice(false);
-      audio.play().catch(() => setIsPlayingVoice(false));
+      audioRef.current.play().catch(() => setIsPlayingVoice(false));
       return;
     }
 
@@ -423,6 +527,11 @@ export default function PipelineInspectorPage() {
       window.speechSynthesis.speak(u);
     }
   };
+
+  const audioProgressPct =
+    audioDuration > 0
+      ? Math.min(100, Math.round((audioCurrentTime / audioDuration) * 100))
+      : 0;
 
   const handleOpenStripModal = (strip: BoundingBox) => {
     if (strip.databaseRecord) {
@@ -814,17 +923,144 @@ export default function PipelineInspectorPage() {
                 </button>
               </div>
 
+              {/* Dedicated Interactive Bangla Voice Player (WaveSurfer.js + Duration & Progress) */}
+              <div className="rounded-2xl bg-gradient-to-r from-[#09353c] via-[#0b5563] to-[#0d6e6e] p-4 sm:p-5 text-white shadow-md border border-teal-700/40 space-y-3.5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3.5">
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={toggleBanglaVoice}
+                      disabled={isVoiceLoading}
+                      className={`flex items-center justify-center size-11 rounded-2xl shadow-md transition cursor-pointer shrink-0 ${
+                        isVoiceLoading
+                          ? "bg-white/15 text-emerald-300 cursor-wait"
+                          : isPlayingVoice
+                          ? "bg-white text-[#09353c] hover:bg-emerald-50"
+                          : "bg-[#0ea86b] text-white hover:bg-emerald-400"
+                      }`}
+                      aria-label={
+                        isPlayingVoice
+                          ? "Pause Bangla Audio"
+                          : "Play Bangla Audio"
+                      }
+                    >
+                      {isVoiceLoading ? (
+                        <Loader2 className="size-5 animate-spin" />
+                      ) : isPlayingVoice ? (
+                        <Pause className="size-5 fill-current" />
+                      ) : (
+                        <Play className="size-5 fill-current ml-0.5" />
+                      )}
+                    </button>
+
+                    <div className="space-y-0.5">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs sm:text-sm font-extrabold tracking-wide flex items-center gap-1.5">
+                          <Volume2 className="size-4 text-emerald-300" />
+                          বাংলা ভয়েস প্লেয়ার (Bangla Voice Player)
+                        </span>
+                        {isVoiceLoading ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/20 text-amber-200 border border-amber-300/30 px-2.5 py-0.5 text-[10px] font-bold">
+                            <Loader2 className="size-3 animate-spin" />
+                            অডিও তৈরি হচ্ছে...
+                          </span>
+                        ) : isVoiceReady ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-400/20 text-emerald-200 border border-emerald-300/30 px-2.5 py-0.5 text-[10px] font-bold">
+                            <Check className="size-3 stroke-[3]" />
+                            {isPlayingVoice
+                              ? "চলছে (Playing)"
+                              : "প্রস্তুত (Ready)"}
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-white/15 text-teal-100 border border-white/20 px-2.5 py-0.5 text-[10px] font-bold">
+                            ব্রাউজার ভয়েস (Fallback)
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-teal-100/85">
+                        {isVoiceLoading
+                          ? "ধাপ ৬/৬: বাংলা নিউরাল ভয়েস অডিও ব্যাকগ্রাউন্ডে প্রস্তুত হচ্ছে..."
+                          : isVoiceReady
+                          ? `মোট দৈর্ঘ্য: ${formatAudioTime(audioDuration)} • সম্পন্ন: ${audioProgressPct}%`
+                          : "নিউরাল অডিও পাওয়া যায়নি — ব্রাউজার ভয়েস দিয়ে শুনুন"}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Animated Soundwave Equalizer Bars */}
+                  <div className="flex items-end justify-center sm:justify-end gap-1 h-9 px-3 py-1.5 rounded-2xl bg-white/10 border border-white/10">
+                    {EQUALIZER_HEIGHTS.map((h, i) => (
+                      <span
+                        key={i}
+                        style={{
+                          height: isPlayingVoice
+                            ? `${h}%`
+                            : isVoiceLoading
+                            ? `${Math.max(25, Math.round(h * 0.5))}%`
+                            : "22%",
+                          animationDelay: `${i * 90}ms`,
+                        }}
+                        className={`w-1 rounded-full transition-all duration-300 ${
+                          isPlayingVoice
+                            ? "bg-emerald-300 animate-pulse"
+                            : isVoiceLoading
+                            ? "bg-amber-300/70 animate-pulse"
+                            : "bg-teal-200/50"
+                        }`}
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                {/* WaveSurfer.js Interactive Waveform & Progress Row */}
+                <div className="space-y-1.5">
+                  {isVoiceLoading || readyAudioBlobUrl ? (
+                    <BanglaVoiceWaveform
+                      audioUrl={readyAudioBlobUrl}
+                      audioElement={readyAudioEl}
+                      isLoading={isVoiceLoading}
+                      onSeek={handleAudioSeek}
+                    />
+                  ) : (
+                    <div className="h-11 w-full rounded-xl bg-white/10 border border-white/15 flex items-center justify-center px-3 text-[11px] font-semibold text-teal-100/90">
+                      ব্রাউজার ভয়েস প্রস্তুত — শুনতে Play অথবা &ldquo;বাংলায় শুনুন&rdquo; ক্লিক করুন
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between text-[11px] font-mono text-teal-100/90">
+                    <span>{formatAudioTime(audioCurrentTime)}</span>
+                    <span className="font-bold text-emerald-300">
+                      {isVoiceLoading
+                        ? "Generating MP3..."
+                        : isVoiceReady
+                        ? `${audioProgressPct}% Done`
+                        : isPlayingVoice
+                        ? "Speaking (Browser Voice)..."
+                        : "Browser Voice Ready"}
+                    </span>
+                    <span>
+                      {audioDuration > 0
+                        ? formatAudioTime(audioDuration)
+                        : "--:--"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
               {/* Clean Line-by-Line Bangla Summary (No Paragraph Block) */}
               <ul className="space-y-2">
                 {summaryLines.map((line, i) => {
-                  const isStripLine = line.startsWith("স্ট্রিপ");
                   const isFirstLine = i === 0;
+                  const isStripLine =
+                    line.startsWith("ওষুধ ") || line.startsWith("স্ট্রিপ");
+                  const isWarningLine = line.startsWith("সতর্কতা");
                   return (
                     <li
                       key={`${i}-${line.slice(0, 16)}`}
                       className={`flex items-start gap-2.5 text-xs sm:text-sm leading-relaxed ${
                         isFirstLine
                           ? "font-extrabold text-[#0b5563]"
+                          : isWarningLine
+                          ? "font-semibold text-amber-900 bg-amber-50/90 rounded-xl px-3.5 py-2 border border-amber-200"
                           : isStripLine
                           ? "font-semibold text-[#09353c] bg-white/85 rounded-xl px-3.5 py-2 border border-teal-100/80"
                           : "font-bold text-[#0ea86b] pt-1"

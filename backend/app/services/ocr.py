@@ -20,10 +20,7 @@ try:
         MIN_FUZZY_SCORE,
         OCR_LANG,
         YOLO_CROP_PAD_RATIO,
-        YOLO_ENABLE_CROP_RESCUE,
         YOLO_PIPELINE_MODE,
-        YOLO_RESCUE_CONF_MIN,
-        YOLO_RESCUE_MAX_CROPS,
     )
     from backend.app.models.schemas import (
         BoundingBox,
@@ -42,10 +39,7 @@ except ImportError:
         MIN_FUZZY_SCORE,
         OCR_LANG,
         YOLO_CROP_PAD_RATIO,
-        YOLO_ENABLE_CROP_RESCUE,
         YOLO_PIPELINE_MODE,
-        YOLO_RESCUE_CONF_MIN,
-        YOLO_RESCUE_MAX_CROPS,
     )
     from app.models.schemas import (  # type: ignore
         BoundingBox,
@@ -1574,7 +1568,7 @@ class MedicineStripScanner:
 
         # Deterministic spatial sort & clean 1..M strip re-indexing before safety alert evaluation
         strip_results.sort(key=lambda r: (r.bbox.y1 if r.bbox else 0, r.bbox.x1 if r.bbox else 0))
-        strip_results = strip_results[: max(MAX_STRIPS_PER_IMAGE, len(strip_results))]
+        strip_results = strip_results[:MAX_STRIPS_PER_IMAGE]
         for new_idx, r in enumerate(strip_results, start=1):
             r.strip_index = new_idx
 

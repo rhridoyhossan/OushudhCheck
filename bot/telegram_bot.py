@@ -69,7 +69,14 @@ def _chunk_html_blocks(blocks: List[str], max_len: int = MAX_TELEGRAM_MSG_LEN) -
             if len(block) <= max_len:
                 current = block
             else:
-                chunks.append(block[: max_len - 3] + "...")
+                plain = html.unescape(re.sub(r"<[^>]+>", "", block))
+                budget = max(0, max_len - 3)
+                cut = min(len(plain), budget)
+                safe_truncated = _esc(plain[:cut])
+                while cut > 0 and len(safe_truncated) > budget:
+                    cut = max(0, cut - max(1, len(safe_truncated) - budget))
+                    safe_truncated = _esc(plain[:cut])
+                chunks.append(safe_truncated + "...")
                 current = ""
     if current:
         chunks.append(current)
@@ -235,7 +242,7 @@ class OushudhCheckTelegramBot:
     async def handle_features(self, session: aiohttp.ClientSession, chat_id: int) -> None:
         msg = (
             "✨ <b>OushudhCheck-এর AI সুবিধাসমূহ (/features)</b>\n\n"
-            "• 🔍 <b>মাল্টি-স্ট্রিপ ডিটেকশন (YOLO26n ONNX):</b> এক ছবিতেই ১–৬টি ওষুধের পাতা শনাক্ত করে।\n"
+            "• 🔍 <b>মাল্টি-স্ট্রিপ ডিটেকশন (YOLO26s ONNX):</b> এক ছবিতেই ১–৬টি ওষুধের পাতা শনাক্ত করে।\n"
             "• 🧾 <b>ফয়েল টেক্সট রিডার (PP-OCRv6 + CLAHE):</b> চকচকে ফয়েল ও বাঁকা/লম্বালম্বি লেখা পড়ে।\n"
             "• 💊 <b>১৭,১৯১+ বাংলাদেশি ওষুধের ডাটাবেস:</b> ১,৬৬১+ জেনেরিক ও ব্র্যান্ড ম্যাচিং (RapidFuzz)।\n"
             "• 🚨 <b>ডুপ্লিকেট ও ওভারডোজ গার্ড:</b> ভিন্ন ব্র্যান্ড কিন্তু একই জেনেরিক (যেমন Napa + Ace = Paracetamol) শনাক্ত করে সতর্ক করে।\n"
@@ -281,6 +288,28 @@ class OushudhCheckTelegramBot:
                     return None
                 chunks.append(chunk)
             return b"".join(chunks)
+
+    async def _build_guidance_parallel(
+        self,
+        matched_strips: List[Any],
+        dup_ids: set,
+        inter_ids: set,
+    ) -> List[Any]:
+        """Run per-strip Gemma 3 1B guidance generation off the event loop in parallel (bounded to 2 slots)."""
+        if not matched_strips:
+            return []
+        sem = asyncio.Semaphore(2)
+
+        async def _one(strip: Any) -> Any:
+            async with sem:
+                return await asyncio.to_thread(
+                    self.scanner.slm.build_schedule_and_guidance,
+                    strip,
+                    is_duplicate=(strip.strip_index in dup_ids),
+                    is_interaction=(strip.strip_index in inter_ids),
+                )
+
+        return list(await asyncio.gather(*(_one(s) for s in matched_strips)))
 
     async def handle_photo(
         self,
@@ -379,19 +408,7 @@ class OushudhCheckTelegramBot:
         dup_ids = {sid for a in alerts if a.alert_type == "duplicate_generic" for sid in a.involved_strips}
         inter_ids = {sid for a in alerts if a.alert_type != "duplicate_generic" for sid in a.involved_strips}
 
-        def _build_all_guidance():
-            out = []
-            for s in matched:
-                out.append(
-                    self.scanner.slm.build_schedule_and_guidance(
-                        s,
-                        is_duplicate=(s.strip_index in dup_ids),
-                        is_interaction=(s.strip_index in inter_ids),
-                    )
-                )
-            return out
-
-        guidance_list = await asyncio.to_thread(_build_all_guidance)
+        guidance_list = await self._build_guidance_parallel(matched, dup_ids, inter_ids)
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
 
         lines_out = [
@@ -640,17 +657,7 @@ class OushudhCheckTelegramBot:
         dup_ids = {sid for a in alerts if a.alert_type == "duplicate_generic" for sid in a.involved_strips}
         inter_ids = {sid for a in alerts if a.alert_type != "duplicate_generic" for sid in a.involved_strips}
 
-        def _build_multi_guidance():
-            return [
-                self.scanner.slm.build_schedule_and_guidance(
-                    r,
-                    is_duplicate=(r.strip_index in dup_ids),
-                    is_interaction=(r.strip_index in inter_ids),
-                )
-                for r in matched_results
-            ]
-
-        guidance_list = await asyncio.to_thread(_build_multi_guidance)
+        guidance_list = await self._build_guidance_parallel(matched_results, dup_ids, inter_ids)
         lines_out = [f"💊 <b>OushudhCheck তুলনা ও নিরাপত্তা যাচাই</b> (<i>{len(matched_results)}টি ওষুধ</i>)\n"]
         voice_parts = [f"আপনার প্রশ্নে {len(matched_results)}টি ওষুধ পাওয়া গেছে।"]
 

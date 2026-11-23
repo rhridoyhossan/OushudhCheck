@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from itertools import combinations
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 import asyncio
 import base64
 import json
@@ -25,11 +25,16 @@ try:
         MultiTextExtractRequest,
         PaginatedMedicinesResponse,
         StripScanResult,
+        TTSRequest,
         TextExtractRequest,
     )
     from backend.app.services.ocr import MedicineStripScanner, evaluate_multi_strip_safety
     from backend.app.services.slm import generate_bangla_beginner_summary, get_active_slm_label
-    from backend.app.services.voice import synthesize_bangla_speech
+    from backend.app.services.voice import (
+        get_cached_tts_audio_path,
+        get_tts_cache_key,
+        synthesize_bangla_speech,
+    )
 except ImportError:
     from app.core.config import PROJECT_ROOT, get_readonly_db_connection  # type: ignore
     from app.models.schemas import (  # type: ignore
@@ -38,11 +43,16 @@ except ImportError:
         MultiTextExtractRequest,
         PaginatedMedicinesResponse,
         StripScanResult,
+        TTSRequest,
         TextExtractRequest,
     )
     from app.services.ocr import MedicineStripScanner, evaluate_multi_strip_safety  # type: ignore
     from app.services.slm import generate_bangla_beginner_summary, get_active_slm_label  # type: ignore
-    from app.services.voice import synthesize_bangla_speech  # type: ignore
+    from app.services.voice import (  # type: ignore
+        get_cached_tts_audio_path,
+        get_tts_cache_key,
+        synthesize_bangla_speech,
+    )
 
 logger = logging.getLogger("oushudhcheck.api")
 router = APIRouter()
@@ -407,6 +417,34 @@ async def get_bangla_tts_audio(
     )
 
 
+@router.post("/tts")
+async def post_bangla_tts_audio(payload: TTSRequest):
+    """Synthesizes long multi-strip Bangla summaries (up to 6,000 chars) via JSON body without URL length limits."""
+    audio_path = await synthesize_bangla_speech(payload.text)
+    if not audio_path or not audio_path.exists():
+        raise HTTPException(status_code=500, detail="Bangla TTS synthesis failed.")
+    return FileResponse(
+        path=str(audio_path),
+        media_type="audio/mpeg",
+        filename=audio_path.name,
+        headers={"Cache-Control": "public, max-age=86400, immutable"},
+    )
+
+
+@router.get("/tts/clip/{audio_id}")
+async def get_cached_bangla_tts_clip(audio_id: str):
+    """Serves a pre-synthesized cached Bangla MP3 clip by its 16-hex-char cache key."""
+    audio_path = get_cached_tts_audio_path(audio_id)
+    if not audio_path:
+        raise HTTPException(status_code=404, detail="Cached TTS clip not found.")
+    return FileResponse(
+        path=str(audio_path),
+        media_type="audio/mpeg",
+        filename=audio_path.name,
+        headers={"Cache-Control": "public, max-age=86400, immutable"},
+    )
+
+
 @router.get("/benchmark-samples")
 def list_benchmark_samples():
     """Returns available real test photos from `test/` for the AI Transparency Inspector & Pipeline Demo page."""
@@ -506,7 +544,6 @@ async def _assemble_scan_response(
 
     # Build Bangla voice script AFTER LLM guidance so voice speaks the actual Gemma 3 1B summaries + alerts
     t_voice = time.perf_counter()
-    from urllib.parse import quote
 
     if matched_strips:
         concise_voice_parts = [f"আপনার ছবিতে {len(matched_strips)}টি ওষুধের পাতা শনাক্ত করা হয়েছে।"]
@@ -516,8 +553,9 @@ async def _assemble_scan_response(
             concise_voice_parts.append(a.message_bn)
         if not scan_resp.safety_alerts:
             concise_voice_parts.append("ওষুধগুলোতে কোনো ডুপ্লিকেট বা ঝুঁকিপূর্ণ আন্তঃক্রিয়া পাওয়া যায়নি।")
-        concise_voice_script = " ".join(concise_voice_parts)
-        audio_url: Optional[str] = f"/api/v1/tts?text={quote(concise_voice_script[:3200])}"
+        concise_voice_script = "\n".join(concise_voice_parts)
+        audio_id = get_tts_cache_key(concise_voice_script)
+        audio_url: Optional[str] = f"/api/v1/tts/clip/{audio_id}"
     else:
         concise_voice_script = scan_resp.summary_bn
         audio_url = None
@@ -800,7 +838,9 @@ async def _read_and_validate_upload(file: UploadFile) -> np.ndarray:
 @router.post("/scan")
 async def scan_medicine_strips(
     file: UploadFile = File(...),
-    detector_mode: Optional[str] = Query(None, description="Optional override: hybrid_fusion | yolo_only | ocr_only"),
+    detector_mode: Optional[Literal["hybrid_fusion", "yolo_only", "ocr_only"]] = Query(
+        None, description="Optional override: hybrid_fusion | yolo_only | ocr_only"
+    ),
     yolo_conf: Optional[float] = Query(None, ge=0.05, le=0.95, description="Optional YOLO confidence threshold override"),
 ):
     image = await _read_and_validate_upload(file)
@@ -815,7 +855,9 @@ async def scan_medicine_strips(
 @router.post("/scan-stream")
 async def scan_medicine_strips_stream(
     file: UploadFile = File(...),
-    detector_mode: Optional[str] = Query(None, description="Optional override: hybrid_fusion | yolo_only | ocr_only"),
+    detector_mode: Optional[Literal["hybrid_fusion", "yolo_only", "ocr_only"]] = Query(
+        None, description="Optional override: hybrid_fusion | yolo_only | ocr_only"
+    ),
     yolo_conf: Optional[float] = Query(None, ge=0.05, le=0.95, description="Optional YOLO confidence threshold override"),
 ):
     """

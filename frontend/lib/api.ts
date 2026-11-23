@@ -7,6 +7,52 @@ export const API_BASE_URL =
 export const BACKEND_ORIGIN = API_BASE_URL.replace(/\/api(?:\/v1)?\/?$/, "");
 
 /**
+ * Fetches synthesized Bangla MP3 audio from FastAPI.
+ * Tries the short cached clip URL first, then falls back cleanly to `POST /api/v1/tts`
+ * with a JSON body so full multi-strip Bangla summaries (up to 6,000 chars) are never
+ * truncated by URL length limits.
+ */
+export async function fetchBanglaTtsAudioBlob(
+  text: string,
+  audioUrl?: string | null,
+  signal?: AbortSignal
+): Promise<Blob> {
+  if (audioUrl) {
+    const fullAudioUrl = audioUrl.startsWith("http")
+      ? audioUrl
+      : `${BACKEND_ORIGIN}${audioUrl}`;
+    try {
+      const clipRes = await fetch(fullAudioUrl, { signal });
+      if (clipRes.ok) {
+        return await clipRes.blob();
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        throw err;
+      }
+    }
+  }
+
+  const trimmed = (text || "").trim();
+  if (!trimmed) {
+    throw new Error("No Bangla text provided for TTS synthesis.");
+  }
+
+  const postRes = await fetch(`${API_BASE_URL}/tts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: trimmed }),
+    signal,
+  });
+
+  if (!postRes.ok) {
+    throw new Error(`Bangla TTS failed with HTTP ${postRes.status}`);
+  }
+
+  return await postRes.blob();
+}
+
+/**
  * Sends a captured or uploaded medicine strip image to the FastAPI backend
  * (`/api/v1/scan`). Throws a descriptive error if the scan fails so real user
  * photos are never silently replaced with unrelated mock medicines.

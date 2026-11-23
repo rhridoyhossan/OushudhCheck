@@ -37,7 +37,7 @@ import {
 } from "@/lib/types";
 import {
   analyzeMedicineImageStream,
-  BACKEND_ORIGIN,
+  fetchBanglaTtsAudioBlob,
 } from "@/lib/api";
 import { BanglaVoiceWaveform } from "@/components/bangla-voice-waveform";
 import { toast } from "sonner";
@@ -91,8 +91,8 @@ async function resizeImageForUpload(
 const LIVE_SCAN_STAGES = [
   {
     id: 1,
-    labelBn: "ধাপ ১/৫: YOLO26n ONNX স্ট্রিপ ডিটেকশন চলছে...",
-    labelEn: "Locating blister pack bounding boxes via YOLO26n ONNX",
+    labelBn: "ধাপ ১/৫: YOLO26s ONNX স্ট্রিপ ডিটেকশন চলছে...",
+    labelEn: "Locating blister pack bounding boxes via YOLO26s ONNX",
     pct: 20,
   },
   {
@@ -274,14 +274,11 @@ export function MedicineScannerWorkspace() {
       audioRef.current = null;
     }
 
-    const fullAudioUrl = analysis.audioUrl.startsWith("http")
-      ? analysis.audioUrl
-      : `${BACKEND_ORIGIN}${analysis.audioUrl}`;
-
-    fetch(fullAudioUrl, { signal: controller.signal })
-      .then((res) =>
-        res.ok ? res.blob() : Promise.reject(new Error("TTS failed"))
-      )
+    fetchBanglaTtsAudioBlob(
+      analysis.banglaVoiceScript || "",
+      analysis.audioUrl,
+      controller.signal
+    )
       .then((blob) => {
         if (cancelled) return;
         const objUrl = URL.createObjectURL(blob);
@@ -326,11 +323,12 @@ export function MedicineScannerWorkspace() {
         audioRef.current = null;
       }
       setReadyAudioEl(null);
+      setReadyAudioBlobUrl(null);
       if (createdObjUrl) {
         URL.revokeObjectURL(createdObjUrl);
       }
     };
-  }, [activeVoiceKey, analysis?.audioUrl]);
+  }, [activeVoiceKey, analysis?.audioUrl, analysis?.banglaVoiceScript]);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles.length > 0) {
@@ -353,7 +351,8 @@ export function MedicineScannerWorkspace() {
     },
     maxFiles: 1,
     maxSize: MAX_UPLOAD_BYTES,
-    noClick: true,
+    noClick: Boolean(imagePreview),
+    noKeyboard: Boolean(imagePreview),
   });
 
   const handleWebcamSnap = async () => {
@@ -753,6 +752,8 @@ export function MedicineScannerWorkspace() {
               <div
                 {...getRootProps()}
                 className={`rounded-3xl border-2 border-dashed p-8 sm:p-12 text-center transition-all ${
+                  !imagePreview ? "cursor-pointer" : ""
+                } ${
                   isDragActive
                     ? "border-[#0ea86b] bg-emerald-50/40"
                     : "border-teal-200/90 bg-[#f2f9f8]/50 hover:border-[#0d9488]"
@@ -776,7 +777,10 @@ export function MedicineScannerWorkspace() {
                       </span>
                       <button
                         type="button"
-                        onClick={handleResetFile}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleResetFile();
+                        }}
                         className="inline-flex items-center gap-1 text-xs font-bold text-[#0d9488] hover:underline cursor-pointer"
                       >
                         <RotateCcw className="size-3" />
@@ -802,7 +806,10 @@ export function MedicineScannerWorkspace() {
                     <div className="pt-3 flex flex-wrap items-center justify-center gap-2.5">
                       <button
                         type="button"
-                        onClick={open}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          open();
+                        }}
                         className="rounded-full bg-white hover:bg-[#f2f9f8] text-[#09353c] text-xs sm:text-sm font-bold px-7 py-2.5 border border-teal-200 shadow-2xs transition cursor-pointer active:scale-95"
                       >
                         Browse File
@@ -810,7 +817,10 @@ export function MedicineScannerWorkspace() {
 
                       <button
                         type="button"
-                        onClick={() => setCaptureMode("camera")}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setCaptureMode("camera");
+                        }}
                         className="inline-flex items-center gap-1.5 rounded-full bg-teal-50 hover:bg-teal-100/80 text-[#0b5563] text-xs sm:text-sm font-semibold px-5 py-2.5 transition cursor-pointer"
                       >
                         <Camera className="size-4 text-[#0ea86b]" />
@@ -995,7 +1005,7 @@ export function MedicineScannerWorkspace() {
                   audioUrl={readyAudioBlobUrl}
                   audioElement={readyAudioEl}
                   isLoading={isVoiceLoading}
-                  onSeek={(sec) => setAudioCurrentTime(sec)}
+                  onSeek={setAudioCurrentTime}
                 />
                 <div className="flex items-center justify-between text-[11px] font-mono text-teal-100/90">
                   <span>{formatAudioTime(audioCurrentTime)}</span>
