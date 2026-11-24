@@ -124,6 +124,100 @@ docker compose up --build
 - **Services**: Frontend `http://localhost:3000` • Backend API `http://localhost:8000/docs` • Gemma 3 1B SLM `http://localhost:8081`
 - **Kubernetes-ready**: `model-init` maps 1:1 to a Kubernetes `initContainer` writing to a shared `ReadWriteMany` PVC, allowing `slm` and `backend` pods to scale horizontally while mounting `/models` read-only.
 
+## How to Use
+
+### 1. Environment Setup
+
+Copy the example environment file and configure your settings (set `TELEGRAM_BOT_TOKEN` if you plan to run the Telegram bot):
+
+```bash
+cp .env.example .env
+```
+
+### 2. Download the Gemma 3 1B Model (GitHub Releases)
+
+Before running locally (without Docker), download the fine-tuned Bangla Gemma 3 1B GGUF model from [GitHub Releases](https://github.com/rhridoyhossan/OushudhCheck/releases/latest) (`oushudhcheck_gemma3_1b_deploy.zip`):
+
+- **Automatic download (Git Bash / Linux / macOS):**
+  ```bash
+  MODEL_DIR=./models sh scripts/download_model.sh
+  ```
+- **Manual download:**
+  1. Download [`oushudhcheck_gemma3_1b_deploy.zip`](https://github.com/rhridoyhossan/OushudhCheck/releases/latest/download/oushudhcheck_gemma3_1b_deploy.zip) from the latest GitHub Release.
+  2. Extract its contents into the `models/` directory so that `models/oushudhcheck-gemma3-1b-bn.Q4_K_M.gguf` (along with `system_prompt.txt` and `Modelfile`) is present.
+
+> **Note:** If you use Docker (`docker compose up --build`), the `model-init` container downloads and extracts the model automatically. If the model is not present locally, the backend falls back to built-in summary mode.
+
+### 3. Run Locally (Without Docker)
+
+#### Option A: One-Click Launcher (Windows)
+
+Run `run_local.bat` from the project root to create/verify `.venv`, install Python dependencies, and launch the SLM server, FastAPI backend, Telegram bot, and Next.js frontend in separate windows:
+
+```bat
+run_local.bat
+```
+
+#### Option B: Manual Setup
+
+1. **Create and activate the Python virtual environment:**
+
+   ```bash
+   python -m venv .venv
+   ```
+
+   - **Git Bash (Windows):**
+     ```bash
+     source .venv/Scripts/activate
+     ```
+   - **PowerShell (Windows):**
+     ```powershell
+     .\.venv\Scripts\Activate.ps1
+     ```
+   - **Linux / macOS:**
+     ```bash
+     source .venv/bin/activate
+     ```
+
+2. **Install Python dependencies:**
+
+   ```bash
+   pip install -r backend/requirements.txt -r bot/requirements.txt
+   ```
+
+3. **Start the Gemma 3 1B Bangla SLM (`llama-server` on port `8081`):**
+
+   ```bash
+   llama-server -m models/oushudhcheck-gemma3-1b-bn.Q4_K_M.gguf --host 127.0.0.1 --port 8081 -c 8192 -np 2 -fa on --cache-reuse 512
+   ```
+
+4. **Start the FastAPI backend (`http://localhost:8000`):**
+
+   ```bash
+   python -m uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000
+   ```
+
+5. **Start the Next.js frontend (`http://localhost:3000`):**
+
+   ```bash
+   cd frontend
+   npm install
+   npm run dev
+   ```
+
+6. **(Optional) Start the Telegram bot:**
+
+   ```bash
+   python bot/telegram_bot.py
+   ```
+
+### 4. Using the Platform
+
+- **Web Strip Scanner (`http://localhost:3000/scan`):** Place **1–6 medicine strips** on a flat, well-lit surface, upload an image or capture one with your webcam, and review detected brands, generic ingredients, duplicate-ingredient alerts, potential drug-interaction warnings, and Bangla text + voice explanations.
+- **Medicine Database (`http://localhost:3000/database`):** Search Bangladeshi medicine brands, generic ingredients, and strengths.
+- **Telegram Bot (`@OushudhCheck_bot`):** Send a photo of medicine strips, a Bangla voice message, or a text query to receive step-by-step progress updates, safety analysis, and Bangla voice replies.
+- **REST API (`http://localhost:8000/docs`):** Inspect and test backend endpoints directly via the interactive Swagger UI.
+
 ## Project Goals
 
 - Make medicine information more accessible to people in Bangladesh.

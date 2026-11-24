@@ -6,7 +6,7 @@ Features:
 - Loads TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_USERNAME from .env
 - Live 5-Stage Progress Feedback (`editMessageText` + `sendChatAction`) so the user sees every pipeline step in real time
 - Bangla Summary (`সহজ বাংলা সারসংক্ষেপ`), schedule, and duplicate warnings
-- Supports photo scans (1–6 strips), Bangla voice questions (`faster-whisper` ASR), and text queries
+- Supports photo scans (1–6 strips), Caregiver Mode follow-up Q&A (voice & text with 30-min session memory), Bangla voice queries (`faster-whisper` ASR), and text queries
 - Replies with Bangla spoken voice audio (`edge-tts` `bn-BD-NabanitaNeural`)
 """
 
@@ -21,6 +21,7 @@ import os
 import re
 import sys
 import tempfile
+import threading
 import time
 import uuid
 
@@ -35,11 +36,44 @@ if str(ROOT_DIR) not in sys.path:
 
 load_dotenv(ROOT_DIR / ".env")
 
+from backend.app.models.schemas import SafetyAlert, StripScanResult
 from backend.app.services.ocr import MedicineStripScanner, evaluate_multi_strip_safety
+from backend.app.services.slm import answer_caregiver_followup
 from backend.app.services.voice import synthesize_bangla_speech, transcribe_bangla_audio
 
 MAX_TELEGRAM_MSG_LEN = 3900
 MAX_DOWNLOAD_BYTES = 15 * 1024 * 1024  # 15 MB
+CAREGIVER_SESSION_TTL_SEC = 30 * 60  # 30 minutes
+
+_FOLLOWUP_SHORT_WORD_RE = re.compile(
+    r"(?:^|[\s,।?!;:\"'()\-])(কি|কী|কেন|কত)(?=$|[\s,।?!;:\"'()\-])"
+)
+_FOLLOWUP_KEYWORD_RE = re.compile(
+    r"(?:"
+    r"কখন|কতবার|কীভাবে|কিভাবে|খাওয়া|খাবে|খাবো|খেলে|খাবারের|খাবার|"
+    r"আগে|পরে|খালি\s*পেটে|ভরা\s*পেটে|পার্শ্বপ্রতিক্রিয়া|পার্শ্ব\s*প্রতিক্রিয়া|"
+    r"ক্ষতি|সমস্যা|নিরাপদ|গর্ভাবস্থ|গর্ভবতী|স্তন্যদান|বুকের\s*দুধ|সতর্কতা|নিষেধ|"
+    r"সংরক্ষণ|রাখব|রাখা|কাজ|অন্য\s*ওষুধ|একসাথে|ডোজ|মাত্রা|এই\s*ওষুধ|"
+    r"ওষুধটি|ওষুধটা|এটা|এটি|দিতে\s*হবে|খাওয়াবো|বাচ্চা|শিশু|বয়স্ক|"
+    r"\b(?:before\s+meal|after\s+meal|empty\s+stomach|with\s+food|food|eat|"
+    r"side\s+effects?|pregnant|pregnancy|breastfeed\w*|lactation|safe|safety|"
+    r"interact\w*|together|warning|precaution|storage|store|how\s+to|when\s+to|"
+    r"how\s+many|how\s+often|dosage|dose|what\s+is|used\s+for|can\s+i|should\s+i|give)\b"
+    r")",
+    flags=re.IGNORECASE,
+)
+
+
+def _looks_like_followup_question(text: str) -> bool:
+    """Detect whether a voice/text utterance is a caregiver follow-up question rather than a standalone brand name."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+    if "?" in cleaned or "؟" in cleaned:
+        return True
+    if _FOLLOWUP_KEYWORD_RE.search(cleaned) or _FOLLOWUP_SHORT_WORD_RE.search(cleaned):
+        return True
+    return False
 
 
 def _esc(val: Any) -> str:
@@ -100,6 +134,95 @@ class OushudhCheckTelegramBot:
             raise RuntimeError("TELEGRAM_BOT_TOKEN is missing in .env")
         self.scanner = MedicineStripScanner()
         self.offset = 0
+        self.caregiver_sessions: Dict[int, Dict[str, Any]] = {}
+        self._caregiver_lock = threading.Lock()
+
+    def _prune_expired_sessions_locked(self, now: float) -> None:
+        expired_ids = [
+            cid
+            for cid, sess in self.caregiver_sessions.items()
+            if (now - float(sess.get("updated_at", 0.0))) > CAREGIVER_SESSION_TTL_SEC
+        ]
+        for cid in expired_ids:
+            self.caregiver_sessions.pop(cid, None)
+
+    def _get_caregiver_session(self, chat_id: int) -> Dict[str, Any]:
+        now = time.monotonic()
+        with self._caregiver_lock:
+            self._prune_expired_sessions_locked(now)
+            sess = self.caregiver_sessions.get(chat_id)
+            if not sess:
+                return {"enabled": False, "strips": [], "alerts": [], "updated_at": 0.0}
+            return {
+                "enabled": bool(sess.get("enabled", False)),
+                "strips": list(sess.get("strips", [])),
+                "alerts": list(sess.get("alerts", [])),
+                "updated_at": float(sess.get("updated_at", 0.0)),
+            }
+
+    def _set_caregiver_enabled(self, chat_id: int, enabled: bool) -> Dict[str, Any]:
+        now = time.monotonic()
+        with self._caregiver_lock:
+            self._prune_expired_sessions_locked(now)
+            existing = self.caregiver_sessions.get(chat_id)
+            strips = list(existing.get("strips", [])) if existing else []
+            alerts = list(existing.get("alerts", [])) if existing else []
+            self.caregiver_sessions[chat_id] = {
+                "enabled": enabled,
+                "strips": strips,
+                "alerts": alerts,
+                "updated_at": now,
+            }
+            return {
+                "enabled": enabled,
+                "strips": list(strips),
+                "alerts": list(alerts),
+                "updated_at": now,
+            }
+
+    def _save_caregiver_scan(
+        self,
+        chat_id: int,
+        strips: List[StripScanResult],
+        alerts: List[SafetyAlert],
+    ) -> Dict[str, Any]:
+        now = time.monotonic()
+        with self._caregiver_lock:
+            self._prune_expired_sessions_locked(now)
+            existing = self.caregiver_sessions.get(chat_id)
+            enabled = bool(existing.get("enabled", False)) if existing else False
+            saved_strips = list(strips)
+            saved_alerts = list(alerts)
+            self.caregiver_sessions[chat_id] = {
+                "enabled": enabled,
+                "strips": saved_strips,
+                "alerts": saved_alerts,
+                "updated_at": now,
+            }
+            return {
+                "enabled": enabled,
+                "strips": list(saved_strips),
+                "alerts": list(saved_alerts),
+                "updated_at": now,
+            }
+
+    def _touch_caregiver_session(self, chat_id: int) -> None:
+        now = time.monotonic()
+        with self._caregiver_lock:
+            sess = self.caregiver_sessions.get(chat_id)
+            if sess is not None:
+                sess["updated_at"] = now
+
+    @staticmethod
+    def _format_session_med_names(strips: List[StripScanResult]) -> str:
+        names: List[str] = []
+        for s in strips:
+            m = s.matched_medicine
+            if not m:
+                continue
+            strength = (s.extracted_strength or m.package_container or "").strip()
+            names.append(f"{m.brand_name} ({strength})" if strength else m.brand_name)
+        return ", ".join(names) if names else "স্ক্যানকৃত ওষুধ"
 
     async def api_call(self, session: aiohttp.ClientSession, method: str, **kwargs: Any) -> Dict[str, Any]:
         url = f"{API_BASE}/{method}"
@@ -188,6 +311,8 @@ class OushudhCheckTelegramBot:
     async def register_bot_commands(self, session: aiohttp.ClientSession) -> None:
         commands = [
             {"command": "start", "description": "স্বাগতম ও মূল মেনু (Welcome & Menu)"},
+            {"command": "caregiver", "description": "কেয়ারগিভার মোড চালু/বন্ধ (Caregiver Voice Q&A)"},
+            {"command": "exit", "description": "কেয়ারগিভার মোড বন্ধ করুন (Exit Caregiver Mode)"},
             {"command": "help", "description": "ব্যবহারের নিয়মাবলী (How to use)"},
             {"command": "guide", "description": "ভালো ছবি তোলার টিপস (Photo Guide)"},
             {"command": "features", "description": "AI ও নিরাপত্তা সুবিধাসমূহ (Features)"},
@@ -201,9 +326,11 @@ class OushudhCheckTelegramBot:
             f"👋 <b>স্বাগতম {_esc(user_name)}!</b> আমি <b>OushudhCheck AI</b> (@{_esc(TELEGRAM_BOT_USERNAME)})।\n\n"
             "📸 <b>কীভাবে ব্যবহার করবেন:</b>\n"
             "১. টেবিলের ওপর ১ থেকে ৬টি ওষুধের পাতা (Medicine Strip) রেখে একটি স্পষ্ট ছবি তুলে পাঠান।\n"
-            "২. 🎤 <b>বাংলা ভয়েস মেসেজ:</b> যেকোনো ওষুধ সম্পর্কে বাংলায় ভয়েস মেসেজ পাঠিয়ে প্রশ্ন করুন।\n"
-            "৩. ⌨️ অথবা যেকোনো ওষুধের নাম লিখে পাঠান (যেমন: <code>Napa Extra</code>, <code>Seclo 20</code>, <code>Amdocal 5</code>, <code>Tufnil 200</code>)।\n\n"
+            "২. 🩺 <b>কেয়ারগিভার মোড (/caregiver):</b> পাতা স্ক্যান করে বাংলা ভয়েস বা টেক্সটে ফলো-আপ প্রশ্ন করুন (যেমন: খাবারের আগে না পরে, পার্শ্বপ্রতিক্রিয়া, গর্ভাবস্থায় নিরাপদ কি না)।\n"
+            "৩. 🎤 <b>বাংলা ভয়েস মেসেজ:</b> যেকোনো ওষুধের নাম বা প্রশ্ন বাংলায় ভয়েস মেসেজ পাঠিয়ে জানুন।\n"
+            "৪. ⌨️ অথবা যেকোনো ওষুধের নাম লিখে পাঠান (যেমন: <code>Napa Extra</code>, <code>Seclo 20</code>, <code>Amdocal 5</code>, <code>Tufnil 200</code>)।\n\n"
             "📌 <b>মেনু কমান্ডসমূহ:</b>\n"
+            "• /caregiver: কেয়ারগিভার ভয়েস প্রশ্নোত্তর মোড চালু করুন (/caregiver off বা /exit দিয়ে বন্ধ করুন)\n"
             "• /help: বিস্তারিত ব্যবহারের নিয়মাবলী\n"
             "• /guide: স্পষ্ট ছবি তোলার টিপস\n"
             "• /features: AI পাইপলাইন ও সুবিধাসমূহ\n"
@@ -218,13 +345,74 @@ class OushudhCheckTelegramBot:
             "<b>১. ওষুধের পাতার ছবি স্ক্যান (১–৬টি স্ট্রিপ):</b>\n"
             "• একসাথে ১ থেকে ৬টি ওষুধের পাতা সমতল টেবিলে রেখে ছবি পাঠান।\n"
             "• আমি প্রতিটি ওষুধের নাম, মাত্রা (mg), জেনেরিক, খাওয়ার নিয়ম, সহজ বাংলা সারসংক্ষেপ এবং ডুপ্লিকেট/আন্তঃক্রিয়া সতর্কতা বাংলা ভয়েসসহ জানাবো।\n\n"
-            "<b>২. টেক্সট লিখে খুঁজুন:</b>\n"
+            "<b>২. কেয়ারগিভার মোড (/caregiver):</b>\n"
+            "• /caregiver চালু করে ওষুধের পাতার ছবি পাঠান, এরপর বাংলা ভয়েস মেসেজ বা টেক্সটে ফলো-আপ প্রশ্ন করুন।\n"
+            "• উদাহরণ: “এই ওষুধটি কি খাবারের আগে না পরে খাবে?”, “পার্শ্বপ্রতিক্রিয়া কী?”, “গর্ভাবস্থায় নিরাপদ কি?”।\n"
+            "• কেয়ারগিভার মোড বন্ধ করে সাধারণ ওষুধ খোঁজায় ফিরতে /caregiver off বা /exit লিখুন।\n\n"
+            "<b>৩. টেক্সট লিখে খুঁজুন:</b>\n"
             "• সরাসরি ওষুধের ব্র্যান্ড বা জেনেরিক নাম লিখুন: যেমন: <code>Napa Extra</code>, <code>Seclo</code>, <code>Omeprazole</code>, <code>Amdocal 5</code>।\n\n"
-            "<b>৩. বাংলা ভয়েস মেসেজ:</b>\n"
-            "• মাইক্রোফোন চেপে ওষুধের নাম বলুন (যেমন: “নাপা এক্সট্রা” বা “সেকলো ২০”): <b>faster-whisper</b> শুনে উত্তর দেবে।\n\n"
+            "<b>৪. বাংলা ভয়েস মেসেজ:</b>\n"
+            "• মাইক্রোফোন চেপে ওষুধের নাম বলুন (যেমন: “নাপা এক্সট্রা” বা “সেকলো ২০”) অথবা স্ক্যানকৃত ওষুধ নিয়ে প্রশ্ন করুন: <b>faster-whisper</b> শুনে বাংলা ভয়েসসহ উত্তর দেবে।\n\n"
             "👉 স্পষ্ট ছবি তোলার টিপস দেখতে /guide চাপুন।"
         )
         await self.send_text(session, chat_id, msg)
+
+    async def handle_caregiver(self, session: aiohttp.ClientSession, chat_id: int, args: str = "") -> None:
+        arg_low = (args or "").strip().lower()
+        if arg_low in ("off", "stop", "exit", "disable", "0"):
+            self._set_caregiver_enabled(chat_id, False)
+            await self.send_text(
+                session,
+                chat_id,
+                "✅ <b>কেয়ারগিভার মোড বন্ধ করা হয়েছে।</b>\n"
+                "এখন আপনি স্বাভাবিকভাবে যেকোনো ওষুধের নাম লিখে বা ছবি পাঠিয়ে তথ্য খুঁজতে পারবেন।\n"
+                "আবার চালু করতে /caregiver লিখুন।",
+            )
+            return
+
+        sess = self._set_caregiver_enabled(chat_id, True)
+        if sess["strips"]:
+            med_names = _esc(self._format_session_med_names(sess["strips"]))
+            msg = (
+                "🩺 <b>কেয়ারগিভার মোড চালু হয়েছে!</b>\n\n"
+                f"💊 <b>বর্তমান স্ক্যানকৃত ওষুধ:</b> {med_names}\n\n"
+                "🎤 এখন বাংলা <b>ভয়েস মেসেজ</b> অথবা <b>টেক্সট</b> পাঠিয়ে এই ওষুধ(গুলো) সম্পর্কে যেকোনো প্রশ্ন করুন।\n"
+                "<b>উদাহরণ প্রশ্ন:</b>\n"
+                "• “এই ওষুধটি কি খাবারের আগে না পরে খাবে এবং দিনে কতবার দিতে হবে?”\n"
+                "• “এই ওষুধ খেলে কী কী পার্শ্বপ্রতিক্রিয়া হতে পারে?”\n"
+                "• “গর্ভাবস্থায় বা স্তন্যদানকালে কি এই ওষুধটি খাওয়া নিরাপদ?”\n\n"
+                "📸 নতুন ওষুধের পাতার ছবি পাঠালে সেটিও স্বয়ংক্রিয়ভাবে আপডেট হয়ে যাবে।\n"
+                "ℹ️ সাধারণ ওষুধ খোঁজায় ফিরতে /caregiver off বা /exit লিখুন।"
+            )
+        else:
+            msg = (
+                "🩺 <b>কেয়ারগিভার মোড চালু হয়েছে!</b>\n\n"
+                "📸 <b>ধাপ ১:</b> প্রথমে ওষুধের পাতার (১–৬টি স্ট্রিপ) একটি স্পষ্ট ছবি পাঠান।\n"
+                "🎤 <b>ধাপ ২:</b> স্ক্যান সম্পন্ন হলে বাংলা <b>ভয়েস মেসেজ</b> বা <b>টেক্সটে</b> ফলো-আপ প্রশ্ন করুন।\n\n"
+                "<b>উদাহরণ প্রশ্ন:</b>\n"
+                "• “এই ওষুধটি কি খাবারের আগে না পরে খাবে?”\n"
+                "• “এই ওষুধ খেলে কী কী পার্শ্বপ্রতিক্রিয়া হতে পারে?”\n"
+                "• “অন্য কোনো ওষুধের সাথে খেলে কি কোনো সমস্যা আছে?”\n\n"
+                "ℹ️ সাধারণ ওষুধ খোঁজায় ফিরতে /caregiver off বা /exit লিখুন।"
+            )
+        await self.send_text(session, chat_id, msg)
+
+    async def handle_exit(self, session: aiohttp.ClientSession, chat_id: int) -> None:
+        sess = self._get_caregiver_session(chat_id)
+        if sess["enabled"]:
+            self._set_caregiver_enabled(chat_id, False)
+            await self.send_text(
+                session,
+                chat_id,
+                "✅ <b>কেয়ারগিভার মোড বন্ধ করা হয়েছে।</b>\n"
+                "এখন আপনি স্বাভাবিকভাবে ওষুধের নাম লিখে বা ছবি পাঠিয়ে খুঁজতে পারবেন।",
+            )
+        else:
+            await self.send_text(
+                session,
+                chat_id,
+                "ℹ️ কেয়ারগিভার মোড বর্তমানে চালু নেই। চালু করতে /caregiver লিখুন।",
+            )
 
     async def handle_guide(self, session: aiohttp.ClientSession, chat_id: int) -> None:
         msg = (
@@ -299,7 +487,7 @@ class OushudhCheckTelegramBot:
         if not matched_strips:
             return []
         sem = asyncio.Semaphore(2)
-    
+
         async def _one(strip: Any) -> Any:
             async with sem:
                 try:
@@ -311,7 +499,15 @@ class OushudhCheckTelegramBot:
                     )
                 except Exception as exc:
                     logger.exception("[DEV-BOT] SLM guidance failed for strip %s: %s", strip.strip_index, exc)
-                    return self.scanner.slm.fallback_guidance(strip)
+                    med = strip.matched_medicine
+                    brand = med.brand_name if med else "ওষুধ"
+                    return (
+                        "চিকিৎসকের পরামর্শ অনুযায়ী সেব্য",
+                        f"{brand} চিকিৎসকের পরামর্শ অনুযায়ী সেবন করুন।",
+                        "চিকিৎসকের পরামর্শ অনুযায়ী",
+                    )
+
+        return list(await asyncio.gather(*(_one(s) for s in matched_strips)))
 
     async def handle_photo(
         self,
@@ -406,6 +602,7 @@ class OushudhCheckTelegramBot:
             "<code>[■■■■■■■■■□] 90%</code>",
         )
         alerts, _, _ = evaluate_multi_strip_safety(strip_results)
+        caregiver_sess = self._save_caregiver_scan(chat_id, matched, alerts)
 
         dup_ids = {sid for a in alerts if a.alert_type == "duplicate_generic" for sid in a.involved_strips}
         inter_ids = {sid for a in alerts if a.alert_type != "duplicate_generic" for sid in a.involved_strips}
@@ -442,6 +639,22 @@ class OushudhCheckTelegramBot:
             lines_out.append("✅ <b>নিরাপত্তা যাচাই:</b> শনাক্তকৃত ওষুধে কোনো ডুপ্লিকেট জেনেরিক বা ঝুঁকিপূর্ণ আন্তঃক্রিয়া পাওয়া যায়নি।")
             voice_parts.append("ওষুধগুলোতে কোনো ডুপ্লিকেট উপাদান পাওয়া যায়নি।")
 
+        if caregiver_sess["enabled"]:
+            lines_out.append(
+                "\n🩺 <b>কেয়ারগিভার মোড চালু আছে:</b> এই ওষুধ(গুলো) নিয়ে এখন বাংলা <b>ভয়েস মেসেজ</b> বা <b>টেক্সটে</b> ফলো-আপ প্রশ্ন করুন।\n"
+                "• “এই ওষুধটি কি খাবারের আগে না পরে খাবে?”\n"
+                "• “এর পার্শ্বপ্রতিক্রিয়া কী কী?”\n"
+                "• “গর্ভাবস্থায় বা স্তন্যদানকালে নিরাপদ কি?”\n"
+                "<i>(বন্ধ করতে /caregiver off বা /exit লিখুন)</i>"
+            )
+        else:
+            lines_out.append(
+                "\n🎤 <b>ফলো-আপ প্রশ্ন করতে চান?</b> এই ওষুধ(গুলো) নিয়ে সরাসরি বাংলা ভয়েস মেসেজে প্রশ্ন করুন (৩০ মিনিট পর্যন্ত মনে থাকবে), অথবা /caregiver চালু করুন:\n"
+                "• “খাবারের আগে না পরে খাবে?”\n"
+                "• “কী কী পার্শ্বপ্রতিক্রিয়া হতে পারে?”\n"
+                "• “অন্য ওষুধের সাথে খেলে কি সমস্যা আছে?”"
+            )
+
         # Remove the temporary progress bar
         await self.delete_message(session, chat_id, progress_msg_id)
         report_chunks = _chunk_html_blocks(lines_out)
@@ -473,6 +686,103 @@ class OushudhCheckTelegramBot:
                 "⚠️ ভয়েস অডিও তৈরি করা সম্ভব হয়নি, তবে উপরের লিখিত রিপোর্টটি সম্পূর্ণ যাচাইকৃত।",
             )
 
+    async def handle_caregiver_followup(
+        self,
+        session: aiohttp.ClientSession,
+        chat_id: int,
+        question: str,
+        user_name: str,
+        existing_msg_id: Optional[int] = None,
+        via_voice: bool = False,
+    ) -> None:
+        logger.info(
+            "[DEV-BOT] Caregiver follow-up from %s (chat_id=%d, voice=%s): %r",
+            user_name,
+            chat_id,
+            via_voice,
+            question,
+        )
+        sess = self._get_caregiver_session(chat_id)
+        session_strips: List[StripScanResult] = sess["strips"]
+        session_alerts: List[SafetyAlert] = sess["alerts"]
+
+        if not session_strips:
+            no_scan_msg = (
+                "📸 <b>প্রথমে ওষুধের পাতার ছবি পাঠান!</b>\n\n"
+                "কেয়ারগিভার মোডে ফলো-আপ প্রশ্নের উত্তর দেওয়ার জন্য আগে ১ থেকে ৬টি ওষুধের পাতার স্পষ্ট ছবি স্ক্যান করুন।\n"
+                "<i>(সাধারণ ওষুধ খোঁজায় ফিরতে /caregiver off বা /exit লিখুন)</i>"
+            )
+            if existing_msg_id:
+                await self.edit_text(session, chat_id, existing_msg_id, no_scan_msg)
+            else:
+                await self.send_text(session, chat_id, no_scan_msg)
+            return
+
+        self._touch_caregiver_session(chat_id)
+        status_text = (
+            f"🗣️ <b>আপনি জিজ্ঞাসা করেছেন:</b> <i>“{_esc(question)}”</i>\n"
+            "🤖 <b>OushudhCheck AI</b> স্ক্যানকৃত ওষুধের তথ্য দেখে বাংলা উত্তর তৈরি করছে..."
+        )
+        if existing_msg_id:
+            await self.edit_text(session, chat_id, existing_msg_id, status_text)
+        else:
+            existing_msg_id = await self.send_text(session, chat_id, status_text)
+        await self.send_chat_action(session, chat_id, "typing")
+
+        try:
+            answer_bn = await asyncio.to_thread(
+                answer_caregiver_followup,
+                question,
+                session_strips,
+                session_alerts,
+            )
+        except Exception as exc:
+            logger.exception("[DEV-BOT] Caregiver follow-up failed for chat_id=%d: %s", chat_id, exc)
+            answer_bn = (
+                "দুঃখিত, এই মুহূর্তে উত্তর তৈরি করা যায়নি। অনুগ্রহ করে প্রশ্নটি আবার করুন অথবা "
+                "যেকোনো চিকিৎসা সিদ্ধান্তের জন্য রেজিস্টার্ড চিকিৎসকের পরামর্শ নিন।"
+            )
+
+        med_names = _esc(self._format_session_med_names(session_strips))
+        footer = (
+            "💡 <i>আরও প্রশ্ন থাকলে বাংলা ভয়েস বা টেক্সট পাঠান। সাধারণ ওষুধ খোঁজায় ফিরতে /caregiver off লিখুন।</i>"
+            if sess["enabled"]
+            else "💡 <i>আরও প্রশ্ন থাকলে বাংলা ভয়েস বা টেক্সটে জিজ্ঞাসা করুন, অথবা /caregiver চালু করুন।</i>"
+        )
+        blocks = [
+            f"🩺 <b>কেয়ারগিভার উত্তর (Caregiver Q&amp;A)</b>\n💊 <b>ওষুধ:</b> {med_names}",
+            f"🗣️ <b>আপনি জিজ্ঞাসা করেছেন:</b> <i>“{_esc(question)}”</i>",
+            f"📖 <b>উত্তর:</b>\n{_format_tg_summary(answer_bn)}",
+            footer,
+        ]
+
+        await self.delete_message(session, chat_id, existing_msg_id)
+        for chunk in _chunk_html_blocks(blocks):
+            await self.send_text(session, chat_id, chunk)
+
+        voice_status_id = await self.send_text(
+            session,
+            chat_id,
+            "🔊 <i>বাংলা ভয়েস উত্তর তৈরি হচ্ছে... (Generating Bangla Voice Reply...)</i>",
+        )
+        await self.send_chat_action(session, chat_id, "record_voice")
+        audio_path = await synthesize_bangla_speech(answer_bn)
+        if audio_path and audio_path.exists():
+            await self.send_voice_mp3(
+                session,
+                chat_id,
+                audio_path,
+                caption="🔊 কেয়ারগিভার বাংলা ভয়েস উত্তর (OushudhCheck AI)",
+            )
+            await self.delete_message(session, chat_id, voice_status_id)
+        else:
+            await self.edit_text(
+                session,
+                chat_id,
+                voice_status_id,
+                "⚠️ ভয়েস উত্তর তৈরি করা সম্ভব হয়নি, তবে উপরের লিখিত উত্তরটি সম্পূর্ণ যাচাইকৃত।",
+            )
+
     async def handle_voice_message(
         self,
         session: aiohttp.ClientSession,
@@ -481,6 +791,17 @@ class OushudhCheckTelegramBot:
         user_name: str,
     ) -> None:
         logger.info("[DEV-BOT] Received voice message from %s (chat_id=%d, file_id=%s)", user_name, chat_id, file_id)
+        pre_sess = self._get_caregiver_session(chat_id)
+        if pre_sess["enabled"] and not pre_sess["strips"]:
+            await self.send_text(
+                session,
+                chat_id,
+                "📸 <b>প্রথমে ওষুধের পাতার ছবি পাঠান!</b>\n\n"
+                "কেয়ারগিভার মোডে ভয়েস ফলো-আপ প্রশ্নের উত্তর দেওয়ার জন্য আগে ১ থেকে ৬টি ওষুধের পাতার স্পষ্ট ছবি স্ক্যান করুন।\n"
+                "<i>(সাধারণ ওষুধ খোঁজায় ফিরতে /caregiver off বা /exit লিখুন)</i>",
+            )
+            return
+
         p_id = await self.send_text(
             session,
             chat_id,
@@ -512,6 +833,18 @@ class OushudhCheckTelegramBot:
                 chat_id,
                 p_id,
                 "⚠️ আপনার ভয়েস মেসেজটি স্পষ্টভাবে বোঝা যায়নি। অনুগ্রহ করে আবার বলুন অথবা ওষুধের নাম লিখে পাঠান।",
+            )
+            return
+
+        sess = self._get_caregiver_session(chat_id)
+        if sess["enabled"] or (sess["strips"] and _looks_like_followup_question(transcribed)):
+            await self.handle_caregiver_followup(
+                session,
+                chat_id,
+                transcribed,
+                user_name,
+                existing_msg_id=p_id,
+                via_voice=True,
             )
             return
 
@@ -650,7 +983,12 @@ class OushudhCheckTelegramBot:
             await self.send_chat_action(session, chat_id, "record_voice")
             audio_path = await synthesize_bangla_speech(bangla_summary)
             if audio_path and audio_path.exists():
-                await self.send_voice_mp3(...)
+                await self.send_voice_mp3(
+                    session,
+                    chat_id,
+                    audio_path,
+                    caption=f"🔊 {m.brand_name} — বাংলা ভয়েস গাইড (OushudhCheck AI)",
+                )
                 await self.delete_message(session, chat_id, voice_status_id)
             else:
                 await self.edit_text(
@@ -742,8 +1080,13 @@ class OushudhCheckTelegramBot:
                         elif "text" in msg:
                             txt = str(msg["text"]).strip()
                             cmd = txt.split()[0].split("@")[0].lower() if txt.startswith("/") else ""
+                            cmd_args = txt.split(maxsplit=1)[1].strip() if len(txt.split(maxsplit=1)) > 1 else ""
                             if cmd == "/start":
                                 await self.handle_start(session, chat_id, user_name)
+                            elif cmd == "/caregiver":
+                                await self.handle_caregiver(session, chat_id, cmd_args)
+                            elif cmd == "/exit":
+                                await self.handle_exit(session, chat_id)
                             elif cmd == "/help":
                                 await self.handle_help(session, chat_id)
                             elif cmd == "/guide":
@@ -761,7 +1104,17 @@ class OushudhCheckTelegramBot:
                                     "❓ অজানা কমান্ড। ব্যবহারের নিয়ম দেখতে /help অথবা মূল মেনু দেখতে /start চাপুন।",
                                 )
                             else:
-                                await self.handle_text_query(session, chat_id, txt, user_name)
+                                sess = self._get_caregiver_session(chat_id)
+                                if sess["enabled"] or (sess["strips"] and _looks_like_followup_question(txt)):
+                                    await self.handle_caregiver_followup(
+                                        session,
+                                        chat_id,
+                                        txt,
+                                        user_name,
+                                        via_voice=False,
+                                    )
+                                else:
+                                    await self.handle_text_query(session, chat_id, txt, user_name)
                     except Exception as exc:
                         logger.exception("[DEV-BOT] Update handler failed: %s", exc)
                         try:

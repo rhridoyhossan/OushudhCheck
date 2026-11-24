@@ -29,10 +29,10 @@ from rapidfuzz import fuzz
 
 try:
     from backend.app.core.config import PROJECT_ROOT
-    from backend.app.models.schemas import MedicineInfo, StripScanResult
+    from backend.app.models.schemas import MedicineInfo, SafetyAlert, StripScanResult
 except ImportError:
     from app.core.config import PROJECT_ROOT  # type: ignore
-    from app.models.schemas import MedicineInfo, StripScanResult  # type: ignore
+    from app.models.schemas import MedicineInfo, SafetyAlert, StripScanResult  # type: ignore
 
 logger = logging.getLogger("oushudhcheck.slm")
 
@@ -69,6 +69,8 @@ _SLM_CIRCUIT_OPEN_UNTIL = 0.0
 _SLM_CIRCUIT_COOLDOWN_SEC = 30.0
 _SLM_CACHE_MAX = 2048
 _SLM_CACHE: "OrderedDict[Tuple[str, ...], str]" = OrderedDict()
+_SLM_QA_CACHE_MAX = 512
+_SLM_QA_CACHE: "OrderedDict[Tuple[str, ...], str]" = OrderedDict()
 _SLM_CACHE_LOCK = threading.Lock()
 
 
@@ -689,3 +691,732 @@ class SafetySLMEngine:
             dosage_bn = f"{name_with_str}: জেনেরিক: {med.generic}। খাবারের পরে চিকিৎসকের পরামর্শ অনুযায়ী সেবন করুন।"
 
         return dosage_bn, bangla_summary, timing_tag
+
+
+# ---------------------------------------------------------------------------
+# Caregiver Mode Grounded Follow-Up Q&A (Gemma 3 1B + Deterministic Bangla Fallback)
+# ---------------------------------------------------------------------------
+
+_CAREGIVER_QA_SYSTEM_PROMPT = (
+    "তুমি OushudhCheck কেয়ারগিভার মেডিকেল সহায়ক। শুধুমাত্র প্রদত্ত [ডাটাবেস তথ্য] এবং "
+    "[নিরাপত্তা সতর্কতা]-এর ভিত্তিতে কেয়ারগিভারের নির্দিষ্ট প্রশ্নের সরাসরি, স্পষ্ট ও সহজ বাংলায় "
+    "৩-৫ বাক্যে উত্তর দাও। ওষুধের ব্র্যান্ড নাম, মাত্রা এবং জেনেরিক উপাদানের নাম ডাটাবেসে যেভাবে "
+    "ইংরেজিতে আছে ঠিক সেভাবেই অপরিবর্তিত রাখবে, আর বাকি সম্পূর্ণ ব্যাখ্যা সহজ বাংলায় লিখবে। "
+    "ডাটাবেসে নেই এমন কোনো মাত্রা, পার্শ্বপ্রতিক্রিয়া বা সতর্কতা মনগড়াভাবে যোগ করবে না। "
+    "কোনো ওষুধ যদি মুখে খাওয়ার না হয় (যেমন সাপোজিটরি, ক্রিম, ড্রপ, ইনজেকশন, ইনহেলার), "
+    "তবে কখনোই খালি পেটে, ভরা পেটে বা মুখে সেবনের কথা লিখবে না।"
+)
+
+_CAREGIVER_INTENT_KEYWORDS: Dict[str, Tuple[str, ...]] = {
+    "meal_timing": (
+        "খাবারের আগে", "খাবারের পরে", "খাওয়ার আগে", "খাওয়ার পরে", "খাওয়ার আগে", "খাওয়ার পরে",
+        "খালি পেটে", "ভরা পেটে", "পেট ভরা", "কখন খাব", "কখন খাবে", "কখন খাই", "কখন দিতে",
+        "সকালে", "দুপুরে", "রাতে", "ঘুমানোর আগে", "খাবার", "সময়", "সময়",
+        "before meal", "after meal", "before food", "after food", "empty stomach",
+        "full stomach", "with food", "with meal", "when to take", "what time",
+        "morning", "night", "bedtime", "timing", "meal",
+        "khali pete", "vora pete", "bhora pete", "khabarer age", "khabarer pore", "kokhon",
+    ),
+    "dosage": (
+        "কতবার", "কত বার", "কয়বার", "কয়বার", "কয়টা", "কয়টা", "কতটুকু", "কত দিন", "কতদিন",
+        "কত ঘণ্টা", "কত ঘন্টা", "মাত্রা", "ডোজ", "নিয়ম", "নিয়ম", "কীভাবে", "কিভাবে", "কেমনে",
+        "খাওয়ার নিয়ম", "খাওয়ার নিয়ম", "ব্যবহারের নিয়ম", "ব্যবহারবিধি", "সেবনবিধি", "দিনে",
+        "dose", "dosage", "how to take", "how to use", "how many", "how much",
+        "frequency", "twice", "thrice", "daily", "per day", "hours",
+        "kotobar", "koybar", "kivabe", "niyom",
+    ),
+    "side_effects": (
+        "পার্শ্বপ্রতিক্রিয়া", "পার্শ্ব প্রতিক্রিয়া", "পার্শ্বপ্রতিক্রিয়া", "পার্শ্ব প্রতিক্রিয়া",
+        "সাইড ইফেক্ট", "ক্ষতি", "ক্ষতিকর", "ঘুম ঘুম", "ঘুম আসে", "মাথা ঘোরা", "মাথা ঘোরায়",
+        "বমি", "অ্যালার্জি", "এলার্জি", "র‍্যাশ", "চুলকানি", "কোষ্ঠকাঠিন্য", "পাতলা পায়খানা",
+        "পায়খানা", "পেট ব্যথা", "গ্যাস হয়",
+        "side effect", "side-effect", "adverse", "drowsy", "drowsiness", "sleepy",
+        "dizziness", "dizzy", "nausea", "vomit", "rash", "allergy", "diarrhea", "constipation",
+    ),
+    "pregnancy_lactation": (
+        "গর্ভাবস্থা", "গর্ভাবস্থায়", "গর্ভাবস্থায়", "গর্ভবতী", "প্রেগন্যান্ট", "প্রেগনেন্ট",
+        "প্রেগন্যান্সি", "বাচ্চা পেটে", "অন্তঃসত্ত্বা", "স্তন্যদান", "স্তন্যদানকালে",
+        "বুকের দুধ", "দুধ খাওয়ানো", "দুধ খাওয়ানো", "দুধ পান", "শিশুকে দুধ", "প্রসূতি",
+        "pregnant", "pregnancy", "lactation", "lactating", "breastfeed", "breast feed",
+        "nursing", "milk", "fetus", "trimester", "gorvoboti", "gorvabostha",
+    ),
+    "interactions_duplicates": (
+        "অন্য ওষুধ", "অন্য কোন ওষুধ", "অন্য কোনো ওষুধ", "একসাথে", "এক সাথে", "সাথে খাওয়া",
+        "সাথে খাওয়া", "সাথে খেলে", "মিশিয়ে", "বিক্রিয়া", "বিক্রিয়া", "আন্তঃক্রিয়া", "আন্তঃক্রিয়া",
+        "রিঅ্যাকশন", "রিয়েকশন", "ডুপ্লিকেট", "একই ওষুধ", "একই জেনেরিক", "ওভারডোজ",
+        "interaction", "interact", "duplicate", "together", "combine", "conflict",
+        "overdose", "another medicine", "other medicine", "other drug", "same generic",
+        "eksathe", "onno oshudh",
+    ),
+    "storage": (
+        "সংরক্ষণ", "কোথায় রাখব", "কোথায় রাখব", "কোথায় রাখবে", "কোথায় রাখবে",
+        "কীভাবে রাখব", "কিভাবে রাখব", "ফ্রিজে", "ফ্রিজ", "রোদ", "তাপমাত্রা", "গরম",
+        "মেয়াদ", "মেয়াদ", "রাখা যাবে",
+        "store", "storage", "fridge", "refrigerator", "temperature", "sunlight",
+        "heat", "moisture", "keep", "expiry", "expire", "rakbo", "rakhbo",
+    ),
+    "purpose": (
+        "কী কাজ", "কি কাজ", "কাজ কী", "কাজ কি", "কীসের ওষুধ", "কিসের ওষুধ", "কেন খায়",
+        "কেন খায়", "কেন দেয়", "কেন দেয়", "কী জন্য", "কি জন্য", "কোন রোগ", "উপকার",
+        "কিসে কাজ", "কীসের জন্য", "কিসের জন্য",
+        "what is this", "what does", "purpose", "indication", "treat", "used for",
+        "why take", "what for", "ki kaj", "kiser oshudh", "keno",
+    ),
+    "warnings_precautions": (
+        "সতর্কতা", "সাবধানতা", "সাবধান", "নিষেধ", "নিষেধাজ্ঞা", "কারা খেতে পারবে না",
+        "কারা খাবে না", "খাওয়া যাবে না", "খাওয়া যাবে না", "বারণ", "ঝুঁকি", "নিরাপদ",
+        "সমস্যা আছে", "কোনো সমস্যা", "কোন সমস্যা", "কিডনি", "লিভার", "হার্ট", "ডায়াবেটিস",
+        "হাঁপানি", "অ্যাজমা", "আলসার", "অ্যালকোহল", "গাড়ি", "গাড়ি",
+        "warning", "precaution", "contraindication", "avoid", "danger", "risk",
+        "safe", "safety", "kidney", "liver", "heart", "asthma", "ulcer", "driving",
+        "alcohol", "sotorkota",
+    ),
+}
+
+_MULTI_STRIP_ALL_RE = re.compile(
+    r"(?:একসাথে|এক\s*সাথে|দুইটা|দুটো|উভয়|উভয়|সবগুলো|সব\s*ওষুধ|both|together|all\s+of\s+them|combine)",
+    re.IGNORECASE,
+)
+
+
+def _clean_db_snippet(text: Optional[str], max_len: int = 240) -> str:
+    """Normalizes HTML/whitespace from medicines.db text fields and trims cleanly."""
+    if not text:
+        return ""
+    cleaned = re.sub(r"<[^>]+>", " ", str(text))
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return ""
+    if len(cleaned) <= max_len:
+        return cleaned
+    return textwrap.shorten(cleaned, width=max_len, placeholder="...")
+
+
+def _detect_caregiver_intents(question: str) -> List[str]:
+    """Detects one or more caregiver question intents from Bangla, Banglish, and English text."""
+    q_low = (question or "").strip().lower()
+    if not q_low:
+        return []
+    matched: List[str] = []
+    for intent, keywords in _CAREGIVER_INTENT_KEYWORDS.items():
+        if any(kw in q_low for kw in keywords):
+            matched.append(intent)
+    return matched
+
+
+def _strip_mentioned_in_question(question_low: str, q_ascii_words: List[str], strip: StripScanResult) -> bool:
+    med = strip.matched_medicine
+    if not med:
+        return False
+
+    candidates: List[str] = []
+    brand_low = (med.brand_name or "").strip().lower()
+    if brand_low:
+        candidates.append(brand_low)
+        brand_first = brand_low.split()[0]
+        if len(brand_first) >= 3 and brand_first != brand_low:
+            candidates.append(brand_first)
+
+    generic_low = (med.generic or "").strip().lower()
+    if generic_low:
+        candidates.append(generic_low)
+        for part in re.split(r"\+|/|&|,", generic_low):
+            p = part.strip()
+            if len(p) >= 4:
+                candidates.append(p)
+                first_w = p.split()[0]
+                if len(first_w) >= 4:
+                    candidates.append(first_w)
+
+    for cand in candidates:
+        if len(cand) < 3:
+            continue
+        if re.search(rf"(?<![a-z0-9]){re.escape(cand)}(?![a-z0-9])", question_low):
+            return True
+
+    # Fuzzy match ASCII words >= 4 chars for minor voice-ASR spelling drift (e.g. 'seklo' -> 'seclo')
+    if q_ascii_words:
+        target_words = [c for c in candidates if len(c) >= 4 and " " not in c]
+        for qw in q_ascii_words:
+            if len(qw) < 4:
+                continue
+            for tw in target_words:
+                if fuzz.ratio(qw, tw) >= 84:
+                    return True
+    return False
+
+
+def _select_focused_strips(
+    question: str,
+    strips: Sequence[StripScanResult],
+    intents: Sequence[str],
+) -> Tuple[List[StripScanResult], List[StripScanResult]]:
+    """
+    Returns `(focused_strips, all_valid_strips)`.
+    If multiple strips were scanned and `question` names a specific brand/generic, focuses on
+    the named strip(s) unless the caregiver is explicitly asking about taking/comparing all strips together.
+    """
+    valid_strips = [s for s in strips if s is not None and s.matched_medicine is not None]
+    if len(valid_strips) <= 1:
+        return valid_strips, valid_strips
+
+    q_low = (question or "").strip().lower()
+    if _MULTI_STRIP_ALL_RE.search(q_low):
+        return valid_strips, valid_strips
+
+    q_ascii_words = re.findall(r"[a-z0-9]{3,}", q_low)
+    named = [s for s in valid_strips if _strip_mentioned_in_question(q_low, q_ascii_words, s)]
+    if named:
+        # If asking about interactions/duplicates across scanned strips and only 1 strip was named,
+        # keep all strips in view so cross-strip alerts are not hidden.
+        if "interactions_duplicates" in intents and len(named) == 1:
+            return valid_strips, valid_strips
+        return named, valid_strips
+
+    return valid_strips, valid_strips
+
+
+def _filter_relevant_alerts(
+    alerts: Sequence[SafetyAlert],
+    focused_strips: Sequence[StripScanResult],
+    total_valid_strips: int,
+) -> List[SafetyAlert]:
+    if not alerts:
+        return []
+    if len(focused_strips) >= total_valid_strips:
+        return list(alerts)
+    focused_indices = {s.strip_index for s in focused_strips}
+    focused_brands = {
+        (s.matched_medicine.brand_name or "").strip().lower()
+        for s in focused_strips
+        if s.matched_medicine
+    }
+    relevant: List[SafetyAlert] = []
+    for alert in alerts:
+        if any(idx in focused_indices for idx in (alert.involved_strips or [])):
+            relevant.append(alert)
+        elif any((b or "").strip().lower() in focused_brands for b in (alert.involved_brands or [])):
+            relevant.append(alert)
+    return relevant
+
+
+def _strip_display_name(strip: StripScanResult) -> str:
+    med = strip.matched_medicine
+    if not med:
+        return "অজানা ওষুধ"
+    strength = (strip.extracted_strength or med.package_container or "").strip()
+    return f"{med.brand_name} {strength}".strip() if strength else med.brand_name
+
+
+def _extract_meal_timing_bn(med: MedicineInfo, dosage_form: str) -> str:
+    """Returns route-safe Bangla meal/timing guidance grounded in dosage_form, generic, and dosage_description."""
+    non_oral = _get_non_oral_route_rule(dosage_form)
+    if non_oral:
+        return non_oral
+
+    form_low = (dosage_form or "tablet").strip().lower()
+    gen_low = (med.generic or "").lower()
+    dose_low = (med.dosage_description or "").lower()
+
+    if any(k in gen_low for k in ("omeprazole", "esomeprazole", "pantoprazole", "rabeprazole", "lansoprazole", "dexlansoprazole")):
+        return "এটি সাধারণত খাবারের ৩০ মিনিট আগে খালি পেটে পানি দিয়ে গিলে খেতে হয়।"
+    if any(k in dose_low for k in ("before meal", "before food", "empty stomach", "30 minutes before", "30 min before", "1 hour before")):
+        return "ডাটাবেস অনুযায়ী এটি সাধারণত খাবারের আগে (খালি পেটে) পানি দিয়ে সেবন করতে হয়।"
+    if any(k in gen_low for k in ("naproxen", "tolfenamic", "ketorolac", "ibuprofen", "diclofenac", "aceclofenac", "etoricoxib", "meloxicam")):
+        return "গ্যাস্ট্রিক বা পেটের জ্বালাপোড়া এড়াতে এটি অবশ্যই ভরা পেটে (খাবারের পরে বা খাবারের সাথে) সেবন করতে হবে।"
+    if any(k in dose_low for k in ("after meal", "after food", "with food", "with meal", "full stomach")):
+        return "ডাটাবেস অনুযায়ী এটি ভরা পেটে (খাবারের পরে বা খাবারের সাথে) সেবন করতে হয়।"
+    if "paracetamol" in gen_low:
+        return "এটি সাধারণত ভরা পেটে (খাবারের পরে) পানি দিয়ে সেবন করা হয়; প্রয়োজনে ৪ থেকে ৬ ঘণ্টা পরপর খাওয়া যায়।"
+    if any(k in gen_low for k in ("clonazepam", "diazepam", "alprazolam", "bromazepam", "midazolam", "nitrazepam", "flunarizine")):
+        return "এটি সাধারণত রাতে ঘুমানোর আগে অথবা চিকিৎসকের নির্ধারিত সময়ে সেবন করতে হয় (তন্দ্রাভাব হতে পারে)।"
+    if any(k in gen_low for k in ("amlodipine", "losartan", "telmisartan", "bisoprolol", "atenolol", "olmesartan", "valsartan")):
+        return "এটি প্রতিদিন নির্দিষ্ট সময়ে (সাধারণত সকালে) খাবারের আগে বা পরে নিয়মিত সেবন করা যায়।"
+    if any(k in gen_low for k in ("ondansetron", "domperidone", "palonosetron")):
+        return "এটি সাধারণত খাবারের ১৫ থেকে ৩০ মিনিট আগে অথবা বমি ভাব হলে চিকিৎসকের পরামর্শ অনুযায়ী সেবন করতে হয়।"
+    if any(k in form_low for k in ("syrup", "suspension", "elixir", "solution")):
+        return "ব্যবহারের আগে বোতল ভালোভাবে ঝাঁকিয়ে চিকিৎসকের নির্ধারিত মাপনি চামচ বা ড্রপার অনুযায়ী খাবারের পরে সেবন করুন।"
+    return "এটি সাধারণত খাবারের পরে (ভরা পেটে) অথবা চিকিৎসকের নির্ধারিত সময় অনুযায়ী পানি দিয়ে সেবন করতে হয়।"
+
+
+def _call_local_slm_caregiver_qa(
+    question: str,
+    focused_strips: Sequence[StripScanResult],
+    relevant_alerts: Sequence[SafetyAlert],
+    intents: Sequence[str],
+) -> Optional[str]:
+    """
+    Calls local Gemma 3 1B (`SLM_API_URL`) for Caregiver Mode Q&A, strictly grounded in the
+    scanned strip(s)' `matched_medicine` fields and `alerts`, respecting `_SLM_CIRCUIT_OPEN_UNTIL`,
+    `SLM_TIMEOUT_SEC`, and `SLM_MAX_TOKENS`.
+    """
+    global _SLM_CIRCUIT_OPEN_UNTIL
+    if not SLM_API_URL or not focused_strips:
+        return None
+
+    strip_sig = tuple(
+        (
+            s.matched_medicine.brand_id if s.matched_medicine else 0,
+            s.extracted_strength or "",
+            s.detected_dosage_form or (s.matched_medicine.dosage_form if s.matched_medicine else "") or "",
+        )
+        for s in focused_strips
+    )
+    alert_sig = tuple((a.alert_type, a.generic_or_class) for a in relevant_alerts)
+    cache_key = (
+        re.sub(r"\s+", " ", (question or "").strip().lower()),
+        json.dumps(strip_sig, ensure_ascii=False),
+        json.dumps(alert_sig, ensure_ascii=False),
+    )
+
+    with _SLM_CACHE_LOCK:
+        cached = _SLM_QA_CACHE.get(cache_key)
+        if cached is not None:
+            _SLM_QA_CACHE.move_to_end(cache_key)
+            return cached
+        if time.monotonic() < _SLM_CIRCUIT_OPEN_UNTIL:
+            return None
+
+    # Build grounded prompt blocks for each focused strip
+    per_strip_budget = 1.0 if len(focused_strips) == 1 else 0.65
+    lines: List[str] = ["[ডাটাবেস তথ্য]"]
+    non_oral_entries: List[Tuple[str, str, str]] = []
+
+    for idx, strip in enumerate(focused_strips, start=1):
+        med = strip.matched_medicine
+        if not med:
+            continue
+        dosage_form = (strip.detected_dosage_form or med.dosage_form or "Tablet").strip()
+        strength = (strip.extracted_strength or med.package_container or "").strip()
+        non_oral_rule = _get_non_oral_route_rule(dosage_form)
+        if non_oral_rule:
+            non_oral_entries.append((med.brand_name, dosage_form, non_oral_rule))
+
+        if len(focused_strips) > 1:
+            lines.append(f"--- ওষুধ {idx} ---")
+
+        def _lim(base: int, boost: bool = False) -> int:
+            return max(80, int((base + (140 if boost else 0)) * per_strip_budget))
+
+        fields = [
+            ("ওষুধের নাম", med.brand_name, 120),
+            ("মাত্রা", strength, 120),
+            ("ধরন", dosage_form, 80),
+            ("জেনেরিক উপাদান", med.generic, 200),
+            ("প্রস্তুতকারক", med.manufacturer, 100),
+            ("ওষুধের শ্রেণি", med.drug_class, 140),
+            ("ব্যবহারের নির্দেশনা", med.indication, _lim(220, "purpose" in intents)),
+            ("বিস্তারিত নির্দেশনা", med.indication_description, _lim(260, "purpose" in intents)),
+            ("সেবনবিধি ও মাত্রা", med.dosage_description, _lim(320, "meal_timing" in intents or "dosage" in intents)),
+            ("পার্শ্বপ্রতিক্রিয়া", med.side_effects_description, _lim(260, "side_effects" in intents)),
+            ("অন্য ওষুধের সাথে বিক্রিয়া", med.interaction_description, _lim(260, "interactions_duplicates" in intents)),
+            ("গর্ভাবস্থা ও স্তন্যদান", med.pregnancy_and_lactation_description, _lim(260, "pregnancy_lactation" in intents)),
+            ("সতর্কতা", med.precautions_description, _lim(240, "warnings_precautions" in intents)),
+            ("নিষেধাজ্ঞা", med.contraindications_description, _lim(220, "warnings_precautions" in intents)),
+            ("সংরক্ষণ", med.storage_conditions_description, _lim(180, "storage" in intents)),
+        ]
+        for label, val, limit in fields:
+            clean = _clean_db_snippet(val, max_len=limit)
+            if clean:
+                lines.append(f"{label}: {clean}")
+        if non_oral_rule:
+            lines.append(
+                f"ব্যবহারের মাধ্যম (গুরুত্বপূর্ণ): {non_oral_rule} "
+                "কখনোই খালি পেটে, ভরা পেটে, খাবারের আগে/পরে বা মুখে সেবন লিখবে না।"
+            )
+
+    if relevant_alerts:
+        lines.append("\n[নিরাপত্তা সতর্কতা]")
+        for alert in relevant_alerts:
+            msg = (alert.message_bn or alert.message_en or "").strip()
+            if msg:
+                lines.append(f"- ({alert.alert_type}, {alert.severity}): {msg}")
+
+    q_clean = (question or "").strip() or "এই ওষুধটির কাজ, ব্যবহারের নিয়ম এবং সতর্কতা কী?"
+    lines.append(f"\nকেয়ারগিভারের প্রশ্ন: {q_clean}")
+    user_prompt = "\n".join(lines)
+
+    payload = {
+        "model": SLM_MODEL_NAME,
+        "messages": [
+            {"role": "user", "content": f"{_CAREGIVER_QA_SYSTEM_PROMPT}\n\n{user_prompt}"},
+        ],
+        "temperature": 0.15,
+        "top_p": 0.9,
+        "repeat_penalty": 1.05,
+        "max_tokens": SLM_MAX_TOKENS,
+        "stream": False,
+    }
+
+    req = urllib.request.Request(
+        SLM_API_URL,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=SLM_TIMEOUT_SEC) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        content = (
+            data.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+            .strip()
+        )
+        if content and re.search(r"[\u0980-\u09FF]{10,}", content):
+            formatted = _format_bangla_summary(content)
+            # Only apply single-form `_enforce_route_safety` when ALL focused strips share the SAME non-oral route;
+            # for mixed oral + non-oral or multiple distinct non-oral routes, append an explicit per-strip warning
+            # for EVERY non-oral strip so no strip is skipped or given the wrong route.
+            if (
+                non_oral_entries
+                and len(non_oral_entries) == len(focused_strips)
+                and len({rule for _, _, rule in non_oral_entries}) == 1
+            ):
+                formatted = _enforce_route_safety(formatted, non_oral_entries[0][1])
+            elif non_oral_entries:
+                extra_warnings: List[str] = []
+                for b_name, d_form, rule in non_oral_entries:
+                    if rule not in formatted:
+                        extra_warnings.append(f"{b_name} ({d_form}): {rule}")
+                if extra_warnings:
+                    formatted = _format_bangla_summary(
+                        f"{formatted}\nসতর্কতা: " + " ".join(extra_warnings)
+                    )
+
+            if not _is_slm_qa_answer_clinically_valid(formatted, focused_strips, relevant_alerts, intents):
+                logger.info(
+                    "[DEV-SLM] Caregiver Q&A SLM output failed clinical/intent grounding check; using deterministic fallback."
+                )
+                return None
+
+            with _SLM_CACHE_LOCK:
+                _SLM_QA_CACHE[cache_key] = formatted
+                _SLM_QA_CACHE.move_to_end(cache_key)
+                while len(_SLM_QA_CACHE) > _SLM_QA_CACHE_MAX:
+                    _SLM_QA_CACHE.popitem(last=False)
+            return formatted
+        return None
+    except Exception as exc:
+        with _SLM_CACHE_LOCK:
+            _SLM_CIRCUIT_OPEN_UNTIL = time.monotonic() + _SLM_CIRCUIT_COOLDOWN_SEC
+        logger.warning(
+            "[DEV-SLM] Local SLM unavailable for caregiver Q&A (%s); using grounded Bangla fallback (cooldown %.0fs).",
+            exc,
+            _SLM_CIRCUIT_COOLDOWN_SEC,
+        )
+        return None
+
+
+def _is_slm_qa_answer_clinically_valid(
+    answer: str,
+    focused_strips: Sequence[StripScanResult],
+    relevant_alerts: Sequence[SafetyAlert],
+    intents: Sequence[str],
+) -> bool:
+    """
+    Post-generation clinical grounding validator for 1B SLM caregiver Q&A output.
+    Rejects meal-timing contradictions (e.g. telling a patient to take Omeprazole after meal),
+    missing multi-strip coverage, or off-topic summary regressions so the deterministic
+    grounded Bangla engine answers safely instead.
+    """
+    if not answer or not focused_strips:
+        return False
+    ans_low = answer.lower()
+
+    # 1. Multi-strip coverage: every focused strip's brand or generic should be addressed
+    if len(focused_strips) > 1:
+        for strip in focused_strips:
+            med = strip.matched_medicine
+            if not med:
+                continue
+            brand_tok = (med.brand_name or "").strip().lower().split()[0] if med.brand_name else ""
+            gen_tok = (med.generic or "").strip().lower().split()[0] if med.generic else ""
+            if brand_tok and brand_tok not in ans_low and (not gen_tok or gen_tok not in ans_low):
+                return False
+
+    # 2. Single-strip meal-timing contradiction guard (e.g. PPI before-meal vs NSAID after-meal)
+    if len(focused_strips) == 1 and focused_strips[0].matched_medicine:
+        med = focused_strips[0].matched_medicine
+        d_form = (focused_strips[0].detected_dosage_form or med.dosage_form or "Tablet").strip()
+        expected_timing = _extract_meal_timing_bn(med, d_form)
+        if ("খাবারের ৩০ মিনিট আগে" in expected_timing or "খাবারের আগে" in expected_timing) and (
+            "খাবারের পরে" in answer or "ভরা পেটে" in answer
+        ):
+            return False
+        if "অবশ্যই ভরা পেটে" in expected_timing and ("খালি পেটে" in answer or "খাবারের আগে" in answer):
+            return False
+
+    # 3. Intent relevance guard: ensure the 1B model actually addressed the asked topic
+    if "storage" in intents:
+        if not any(k in ans_low for k in ("সংরক্ষণ", "তাপমাত্রা", "শুষ্ক", "ঠান্ডা", "রোদ", "ফ্রিজ", "আলো", "আর্দ্রতা", "°", "30 c", "25 c")):
+            return False
+    if "pregnancy_lactation" in intents:
+        if not any(k in ans_low for k in ("গর্ভাবস্থা", "গর্ভবতী", "স্তন্যদান", "বুকের দুধ", "প্রসূতি", "pregnancy", "lactation")):
+            return False
+    if "interactions_duplicates" in intents and relevant_alerts:
+        if not any(k in ans_low for k in ("ডুপ্লিকেট", "একই জেনেরিক", "বিক্রিয়া", "আন্তঃক্রিয়া", "একসাথে")):
+            return False
+    if "side_effects" in intents:
+        if not any(k in ans_low for k in ("পার্শ্বপ্রতিক্রিয়া", "পার্শ্ব", "বমি", "মাথাব্যথা", "মাথা ঘোরা", "ঘুম", "অ্যালার্জি", "র‍্যাশ", "পেট", "ক্ষতি")):
+            return False
+
+    return True
+
+
+_ORAL_DOSAGE_DESC_RE = re.compile(
+    r"\b(?:tablet|tablets|capsule|capsules|syrup|oral|mouth|swallow)\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_form_safe_dosage_snippet(
+    dosage_description: Optional[str],
+    dosage_form: str,
+    max_len: int = 240,
+) -> str:
+    """
+    Returns a clean `dosage_description` snippet safe for the given `dosage_form`.
+    For non-oral forms (Suppository, Cream, Drops, Injection, Inhaler), prevents shared-generic
+    oral `Tablet:` / `Capsule:` dosage instructions from leaking onto non-oral strips by
+    extracting only a matching non-oral clause (or returning '' if none exists).
+    """
+    if not dosage_description:
+        return ""
+    if not _get_non_oral_route_rule(dosage_form):
+        return _clean_db_snippet(dosage_description, max_len=max_len)
+
+    full = re.sub(r"<[^>]+>", " ", str(dosage_description))
+    full = re.sub(r"\s+", " ", full).strip()
+    if not full:
+        return ""
+
+    form_low = (dosage_form or "").strip().lower()
+    if "suppository" in form_low:
+        form_kws = ("suppository", "suppositories", "rectal", "rectally")
+    elif any(k in form_low for k in ("cream", "ointment", "gel", "lotion", "shampoo", "spray", "paste")):
+        form_kws = ("cream", "ointment", "gel", "lotion", "topical", "apply", "spray", "paste", "shampoo")
+    elif any(k in form_low for k in ("drop", "ophthalmic", "otic", "nasal")):
+        form_kws = ("drop", "drops", "ophthalmic", "eye", "ear", "otic", "nasal", "instill")
+    elif "injection" in form_low or "infusion" in form_low:
+        form_kws = ("injection", "injectable", "infusion", "intravenous", "intramuscular", "iv", "im", "subcutaneous")
+    elif "inhaler" in form_low or "nebul" in form_low:
+        form_kws = ("inhaler", "inhalation", "puff", "puffs", "nebul")
+    else:
+        form_kws = ()
+
+    # Split into sentences/sections and collect only clauses matching this non-oral route
+    # and not describing oral tablet/capsule administration.
+    clauses = [c.strip() for c in re.split(r"(?<=[.;।])\s+|\n+", full) if c.strip()]
+    matched_clauses: List[str] = []
+    for clause in clauses:
+        clause_low = clause.lower()
+        if any(re.search(rf"\b{re.escape(kw)}\b", clause_low) for kw in form_kws):
+            if not _ORAL_DOSAGE_DESC_RE.search(clause):
+                matched_clauses.append(clause)
+    if not matched_clauses:
+        return ""
+    return _clean_db_snippet(" ".join(matched_clauses), max_len=max_len)
+
+
+def _build_deterministic_caregiver_answer(
+    question: str,
+    focused_strips: Sequence[StripScanResult],
+    relevant_alerts: Sequence[SafetyAlert],
+    intents: Sequence[str],
+) -> str:
+    """
+    Bulletproof deterministic Bangla Q&A fallback grounded strictly in `medicines.db` fields
+    and safety alerts when local Gemma 3 1B is offline or unavailable.
+    """
+    sections: List[str] = []
+
+    # Lead with safety alerts when asking about interactions/duplicates or warnings, or when high-severity alerts exist
+    show_alerts_first = bool(relevant_alerts) and (
+        "interactions_duplicates" in intents
+        or "warnings_precautions" in intents
+        or any((a.severity or "").lower() == "high" for a in relevant_alerts)
+    )
+    if show_alerts_first:
+        alert_lines = ["⚠️ নিরাপত্তা সতর্কতা:"]
+        for alert in relevant_alerts:
+            msg = (alert.message_bn or alert.message_en or "").strip()
+            if msg:
+                alert_lines.append(f"• {msg}")
+        if len(alert_lines) > 1:
+            sections.append("\n".join(alert_lines))
+
+    # No specific intent matched -> grounded summary of each focused strip
+    if not intents:
+        for strip in focused_strips:
+            med = strip.matched_medicine
+            if not med:
+                continue
+            d_form = (strip.detected_dosage_form or med.dosage_form or "Tablet").strip()
+            strength = (strip.extracted_strength or med.package_container or "").strip()
+            summary = generate_bangla_beginner_summary(
+                brand_name=med.brand_name,
+                generic=med.generic,
+                dosage_form=d_form,
+                manufacturer=med.manufacturer,
+                drug_class=med.drug_class,
+                indication=med.indication,
+                strength=strength,
+                dosage_description=med.dosage_description,
+                side_effects_description=med.side_effects_description,
+                interaction_description=med.interaction_description,
+                precautions_description=med.precautions_description or med.contraindications_description,
+                use_llm=False,
+            )
+            summary = _enforce_route_safety(summary, d_form)
+            sections.append(summary)
+        return _format_bangla_summary("\n\n".join(sections))
+
+    for strip in focused_strips:
+        med = strip.matched_medicine
+        if not med:
+            continue
+        d_form = (strip.detected_dosage_form or med.dosage_form or "Tablet").strip()
+        form_bn = _DOSAGE_FORM_BN.get(d_form.lower(), d_form)
+        name_str = _strip_display_name(strip)
+        header = f"{name_str} ({med.generic}, {form_bn}):"
+        non_oral_rule = _get_non_oral_route_rule(d_form)
+        parts: List[str] = []
+
+        if "meal_timing" in intents or "dosage" in intents:
+            timing_bn = _extract_meal_timing_bn(med, d_form)
+            parts.append(timing_bn)
+            dose_snip = _extract_form_safe_dosage_snippet(med.dosage_description, d_form, max_len=240)
+            if dose_snip:
+                parts.append(f"ডাটাবেস অনুযায়ী সেবনবিধি/মাত্রা: {dose_snip}")
+            if "dosage" in intents:
+                parts.append("চিকিৎসকের নির্ধারিত মাত্রা ও সময়সীমা মেনে ব্যবহার করুন।")
+
+        if "purpose" in intents:
+            ind_main = _clean_db_snippet(med.indication, max_len=140)
+            ind_desc = _clean_db_snippet(med.indication_description, max_len=240)
+            cls_txt = f" ({med.drug_class})" if med.drug_class else ""
+            if ind_desc:
+                parts.append(f"এটি{cls_txt} মূলত {ind_main or 'সংশ্লিষ্ট উপসর্গ'} নিরাময়ে ব্যবহৃত হয়। ডাটাবেস তথ্য: {ind_desc}")
+            elif ind_main:
+                parts.append(f"এটি{cls_txt} মূলত {ind_main} নিরাময় ও নিয়ন্ত্রণে ব্যবহৃত হয়।")
+            else:
+                parts.append(f"এটি {med.generic}{cls_txt} উপাদানযুক্ত ওষুধ; নির্দিষ্ট রোগের জন্য চিকিৎসকের পরামর্শে ব্যবহৃত হয়।")
+
+        if "side_effects" in intents:
+            se_snip = _clean_db_snippet(med.side_effects_description, max_len=260)
+            if se_snip:
+                parts.append(f"ডাটাবেস অনুযায়ী সম্ভাব্য পার্শ্বপ্রতিক্রিয়া: {se_snip}")
+            else:
+                parts.append(
+                    f"{med.brand_name} ({med.generic})-এর নির্দিষ্ট পার্শ্বপ্রতিক্রিয়ার তালিকা ডাটাবেসে উল্লেখ নেই; "
+                    "তবে অ্যালার্জি, তীব্র অস্বস্তি বা অস্বাভাবিক কোনো লক্ষণ দেখা দিলে দ্রুত চিকিৎসকের পরামর্শ নিন।"
+                )
+
+        if "pregnancy_lactation" in intents:
+            preg_snip = _clean_db_snippet(med.pregnancy_and_lactation_description, max_len=260)
+            if preg_snip:
+                parts.append(f"গর্ভাবস্থা ও স্তন্যদানকালে (ডাটাবেস তথ্য): {preg_snip}")
+                parts.append("গর্ভাবস্থায় বা শিশুকে বুকের দুধ খাওয়ানোর সময় এই ওষুধ ব্যবহারের আগে অবশ্যই চিকিৎসকের অনুমতি নিন।")
+            else:
+                parts.append(
+                    f"ডাটাবেসে {med.brand_name} ({med.generic})-এর গর্ভাবস্থা বা স্তন্যদান সংক্রান্ত নির্দিষ্ট তথ্য পাওয়া যায়নি। "
+                    "নিরাপত্তার জন্য চিকিৎসকের পরামর্শ ছাড়া গর্ভাবস্থায় বা স্তন্যদানকালে এটি গ্রহণ করবেন না।"
+                )
+
+        if "interactions_duplicates" in intents:
+            inter_snip = _clean_db_snippet(med.interaction_description, max_len=260)
+            if inter_snip:
+                parts.append(f"অন্য ওষুধের সাথে বিক্রিয়া (ডাটাবেস তথ্য): {inter_snip}")
+            elif not relevant_alerts:
+                parts.append(
+                    f"{med.brand_name} ({med.generic})-এর জন্য স্ক্যানকৃত ওষুধগুলোর মধ্যে কোনো স্বয়ংক্রিয় ডুপ্লিকেট বা গুরুতর বিক্রিয়া শনাক্ত হয়নি; "
+                    "তবে অন্য কোনো নিয়মিত ওষুধের সাথে একসাথে নেওয়ার আগে চিকিৎসক বা ফার্মাসিস্টের পরামর্শ নিন।"
+                )
+
+        if "storage" in intents:
+            stor_snip = _clean_db_snippet(med.storage_conditions_description, max_len=220)
+            if stor_snip:
+                parts.append(f"সংরক্ষণের নিয়ম (ডাটাবেস তথ্য): {stor_snip}")
+            else:
+                parts.append("শুষ্ক ও ঠান্ডা স্থানে, সরাসরি রোদ ও আর্দ্রতা থেকে দূরে এবং শিশুদের নাগালের বাইরে সংরক্ষণ করুন।")
+
+        if "warnings_precautions" in intents:
+            prec_snip = _clean_db_snippet(med.precautions_description, max_len=220)
+            contra_snip = _clean_db_snippet(med.contraindications_description, max_len=200)
+            if non_oral_rule and non_oral_rule not in parts:
+                parts.append(non_oral_rule)
+            if prec_snip:
+                parts.append(f"সতর্কতা (ডাটাবেস তথ্য): {prec_snip}")
+            if contra_snip:
+                parts.append(f"নিষেধাজ্ঞা: {contra_snip}")
+            if not prec_snip and not contra_snip:
+                parts.append(
+                    "সতর্কতা: দীর্ঘমেয়াদী কোনো রোগ (যেমন কিডনি, লিভার বা হৃদরোগ), অ্যালার্জি বা অন্য ওষুধ চলমান থাকলে "
+                    "ব্যবহারের আগে অবশ্যই চিকিৎসকের পরামর্শ নিন।"
+                )
+
+        if not parts:
+            continue
+
+        # Ensure non-oral warning is always respected and oral phrasing can never leak
+        block = f"{header} " + " ".join(parts)
+        if non_oral_rule:
+            block = _enforce_route_safety(block, d_form)
+        sections.append(block)
+
+    # Append a concise closing safety note if not already ending with a 'সতর্কতা:' line
+    combined = "\n\n".join(sections).strip()
+    if "সতর্কতা:" not in combined and "⚠️" not in combined:
+        combined = f"{combined}\nসতর্কতা: যেকোনো নতুন উপসর্গ বা মাত্রা পরিবর্তনের আগে চিকিৎসকের পরামর্শ নিন।"
+    return _format_bangla_summary(combined)
+
+
+def answer_caregiver_followup(
+    question: str,
+    strips: Sequence[StripScanResult],
+    alerts: Sequence[SafetyAlert] = (),
+) -> str:
+    """
+    Answers a caregiver's voice or text follow-up question in clear Bangla grounded strictly in
+    the scanned medicine strip(s)' `matched_medicine` fields and any `SafetyAlert` objects.
+
+    Uses local Gemma 3 1B (`SLM_API_URL`) when available (with route-safety enforcement for
+    non-oral dosage forms), and automatically falls back to a deterministic grounded Bangla
+    Q&A engine when the local SLM server is offline or unavailable.
+    """
+    global _LAST_SLM_USED_LIVE
+
+    valid_strips = [s for s in (strips or ()) if s is not None and s.matched_medicine is not None]
+    if not valid_strips:
+        return (
+            "কোনো শনাক্তকৃত ওষুধের তথ্য পাওয়া যায়নি। "
+            "অনুগ্রহ করে আগে ওষুধের পাতার একটি স্পষ্ট ছবি পাঠান, তারপর আপনার প্রশ্নটি করুন।"
+        )
+
+    q_clean = (question or "").strip()
+    intents = _detect_caregiver_intents(q_clean)
+    focused_strips, all_valid = _select_focused_strips(q_clean, valid_strips, intents)
+    relevant_alerts = _filter_relevant_alerts(alerts or (), focused_strips, len(all_valid))
+
+    if SLM_API_URL:
+        llm_answer = _call_local_slm_caregiver_qa(
+            question=q_clean,
+            focused_strips=focused_strips,
+            relevant_alerts=relevant_alerts,
+            intents=intents,
+        )
+        if llm_answer:
+            with _SLM_CACHE_LOCK:
+                _LAST_SLM_USED_LIVE = True
+            return llm_answer
+        with _SLM_CACHE_LOCK:
+            _LAST_SLM_USED_LIVE = False
+
+    return _build_deterministic_caregiver_answer(
+        question=q_clean,
+        focused_strips=focused_strips,
+        relevant_alerts=relevant_alerts,
+        intents=intents,
+    )
