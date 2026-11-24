@@ -988,7 +988,7 @@ class OushudhCheckTelegramBot:
                     session,
                     chat_id,
                     audio_path,
-                    caption=f"🔊 {m.brand_name} — বাংলা ভয়েস গাইড (OushudhCheck AI)",
+                    caption=f"🔊 {m.brand_name}: বাংলা ভয়েস গাইড (OushudhCheck AI)",
                 )
                 await self.delete_message(session, chat_id, voice_status_id)
             else:

@@ -5,32 +5,41 @@
 
 # Python
 __pycache__/
+*/__pycache__
 *.py[cod]
 *.egg-info/
 .venv/
+docs/
 venv/
 .pytest_cache/
-test/
 
 # Node / Next.js
 frontend/node_modules/
 frontend/.next/
 frontend/out/
 
-# Audio / temp uploads / big files
+# Audio / temp uploads / large raw or binary weights
 tmp/
 data/raw/
 *.wav
 *.ogg
 *.mp3
+*.gguf
+model.md
+
+# Keep all evaluation benchmark assets, voice examples, automated tests, docs, and proposal tracked
+!test/
+!test/**
+!test/caregiver_voice_examples/
+!test/caregiver_voice_examples/*.mp3
+!tests/
+!tests/**
+!docs/
+!docs/**
+!project.pdf
 
 # OS & Editors
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
-
-*.pdf
-model.md
-*.gguf
-docs/

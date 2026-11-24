@@ -982,7 +982,7 @@ export default function PipelineInspectorPage() {
                           ? "ধাপ ৬/৬: বাংলা নিউরাল ভয়েস অডিও ব্যাকগ্রাউন্ডে প্রস্তুত হচ্ছে..."
                           : isVoiceReady
                           ? `মোট দৈর্ঘ্য: ${formatAudioTime(audioDuration)} • সম্পন্ন: ${audioProgressPct}%`
-                          : "নিউরাল অডিও পাওয়া যায়নি — ব্রাউজার ভয়েস দিয়ে শুনুন"}
+                          : "নিউরাল অডিও পাওয়া যায়নি: ব্রাউজার ভয়েস দিয়ে শুনুন"}
                       </p>
                     </div>
                   </div>
@@ -1023,7 +1023,7 @@ export default function PipelineInspectorPage() {
                     />
                   ) : (
                     <div className="h-11 w-full rounded-xl bg-white/10 border border-white/15 flex items-center justify-center px-3 text-[11px] font-semibold text-teal-100/90">
-                      ব্রাউজার ভয়েস প্রস্তুত — শুনতে Play অথবা &ldquo;বাংলায় শুনুন&rdquo; ক্লিক করুন
+                      ব্রাউজার ভয়েস প্রস্তুত: শুনতে Play অথবা &ldquo;বাংলায় শুনুন&rdquo; ক্লিক করুন
                     </div>
                   )}
                   <div className="flex items-center justify-between text-[11px] font-mono text-teal-100/90">

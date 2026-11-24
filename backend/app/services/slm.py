@@ -698,16 +698,17 @@ class SafetySLMEngine:
 # ---------------------------------------------------------------------------
 
 _CAREGIVER_QA_SYSTEM_PROMPT = (
-    "তুমি OushudhCheck কেয়ারগিভার মেডিকেল সহায়ক। রোগী আগেই ওষুধের সম্পূর্ণ সারসংক্ষেপ পেয়েছেন। "
+    "তুমি OushudhCheck কেয়ারগিভার মেডিকেল সহায়ক। রোগী আগেই ওষুধের সম্পূর্ণ তথ্য ও সারসংক্ষেপ পেয়েছেন। "
     "এখন শুধুমাত্র প্রদত্ত [ওষুধের প্রাসঙ্গিক তথ্য]-এর ভিত্তিতে কেয়ারগিভারের নির্দিষ্ট প্রশ্নের "
     "১-২টি সংক্ষিপ্ত ও সরাসরি বাংলা বাক্যে উত্তর দাও।\n"
     "কঠোর নিয়ম:\n"
-    "১) প্রশ্নে যা জানতে চাওয়া হয়েছে শুধু সেটুকুর সরাসরি উত্তর দাও — কোনো অপ্রাসঙ্গিক ভূমিকা বা বাড়তি তথ্য দিও না।\n"
-    "২) কখনোই 'X হলো একটি ট্যাবলেট, যার মূল সক্রিয় উপাদান Y...' ধরনের সাধারণ পরিচিতি, ধরন বা জেনেরিক উপাদান "
-    "পুনরাবৃত্তি করবে না (যদি না প্রশ্নে উপাদান/জেনেরিক জানতে চাওয়া হয়)।\n"
+    "১) প্রশ্নে যা জানতে চাওয়া হয়েছে শুধু সেটুকুর সরাসরি উত্তর দাও: কোনো অপ্রাসঙ্গিক ভূমিকা বা বাড়তি তথ্য দিও না।\n"
+    "২) কখনোই 'X হলো একটি ট্যাবলেট, যার মূল সক্রিয় উপাদান Y...' ধরনের সাধারণ পরিচিতি, ধরন বা ওষুধটিতে কী উপাদান আছে "
+    "তা পুনরাবৃত্তি করবে না (যদি না প্রশ্নে উপাদান/জেনেরিক জানতে চাওয়া হয়)।\n"
     "৩) প্রশ্নে সতর্কতা, নিষেধাজ্ঞা, গর্ভাবস্থা বা অন্য ওষুধের বিক্রিয়া জানতে না চাইলে 'সতর্কতা:' অংশ যোগ করবে না।\n"
-    "৪) প্রদত্ত তথ্যে নেই এমন কোনো মাত্রা, পার্শ্বপ্রতিক্রিয়া বা সতর্কতা মনগড়াভাবে যোগ করবে না।\n"
-    "৫) ওষুধটি মুখে খাওয়ার না হলে (সাপোজিটরি, ক্রিম, ড্রপ, ইনজেকশন, ইনহেলার) কখনোই খালি পেটে, ভরা পেটে বা "
+    "৪) সম্পূর্ণ উত্তর সহজ ও শুদ্ধ বাংলায় লিখবে: ইংরেজি বাক্য কখনোই লিখবে না বা ডাটাবেস থেকে ইংরেজি কপি করবে না।\n"
+    "৫) প্রদত্ত তথ্যে নেই এমন কোনো মাত্রা, পার্শ্বপ্রতিক্রিয়া বা সতর্কতা মনগড়াভাবে যোগ করবে না।\n"
+    "৬) ওষুধটি মুখে খাওয়ার না হলে (সাপোজিটরি, ক্রিম, ড্রপ, ইনজেকশন, ইনহেলার) কখনোই খালি পেটে, ভরা পেটে বা "
     "মুখে সেবনের কথা লিখবে না।"
 )
 
@@ -811,6 +812,26 @@ def _detect_caregiver_intents(question: str) -> List[str]:
     for intent, keywords in _CAREGIVER_INTENT_KEYWORDS.items():
         if any(kw in q_low for kw in keywords):
             matched.append(intent)
+
+    # Disambiguate overlapping generic words when the user asked a focused pregnancy/lactation question:
+    # e.g. "গর্ভাবস্থায় নিরাপদ কি?" ("নিরাপদ" -> not general warnings) or
+    # "বুকের দুধ খাওয়ানোর সময় খাওয়া যাবে?" ("সময়" -> not meal timing)
+    if "pregnancy_lactation" in matched:
+        if "meal_timing" in matched:
+            explicit_timing_kws = tuple(
+                kw for kw in _CAREGIVER_INTENT_KEYWORDS["meal_timing"] if kw not in ("সময়", "সময়")
+            )
+            if not any(kw in q_low for kw in explicit_timing_kws):
+                matched.remove("meal_timing")
+        if "warnings_precautions" in matched:
+            explicit_warn_kws = tuple(
+                kw
+                for kw in _CAREGIVER_INTENT_KEYWORDS["warnings_precautions"]
+                if kw not in ("নিরাপদ", "safe", "safety", "খাওয়া যাবে না", "খাওয়া যাবে না")
+            )
+            if not any(kw in q_low for kw in explicit_warn_kws):
+                matched.remove("warnings_precautions")
+
     return matched
 
 
@@ -1056,15 +1077,354 @@ def _extract_concise_purpose_bn(med: MedicineInfo) -> str:
     if any(k in gen_low for k in ("vitamin b", "riboflavin", "thiamine")):
         return "এটি শরীরে ভিটামিন-বি এর ঘাটতি পূরণ, স্নায়ুর দুর্বলতা এবং শারীরিক ক্লান্তি দূর করতে ব্যবহৃত হয়।"
     if any(k in cls_low or k in ind_low for k in ("antibiotic", "penicillin", "cephalosporin", "macrolide", "infection", "bacterial")):
-        return f"এটি একটি অ্যান্টিবায়োটিক, যা ব্যাকটেরিয়াজনিত সংক্রমণ ({ind_main or 'Bacterial Infection'}) নিরাময়ে ব্যবহৃত হয়।"
+        return "এটি একটি অ্যান্টিবায়োটিক, যা ব্যাকটেরিয়াজনিত সংক্রমণ নিরাময়ে ব্যবহৃত হয়।"
 
-    if ind_main:
-        return f"এটি মূলত {ind_main} নিরাময় ও নিয়ন্ত্রণে ব্যবহৃত হয়।"
-    ind_desc = _clean_db_snippet(med.indication_description, max_len=160)
-    if ind_desc:
-        return f"এটি মূলত {ind_desc}-এর চিকিৎসায় ব্যবহৃত হয়।"
-    cls_txt = f" ({med.drug_class})" if med.drug_class else ""
-    return f"এটি{cls_txt} নির্দিষ্ট রোগের উপসর্গ নিয়ন্ত্রণে চিকিৎসকের পরামর্শে ব্যবহৃত হয়।"
+    # Translate common English indication/class cues into concise Bangla (never leak raw English prose)
+    ind_combined = f"{ind_low} {cls_low} {(med.indication_description or '').lower()}"
+    purpose_tags: List[str] = []
+    for pat, bn_label in (
+        (r"\b(?:fever|pyrexia|antipyretic)\b", "জ্বর"),
+        (r"\b(?:pain|analgesic|ache|migraine|arthritis|dysmenorrhea)\b", "ব্যথা ও প্রদাহ"),
+        (r"\b(?:allergy|allergic|antihistamine|urticaria|rhinitis|sneezing|itching)\b", "অ্যালার্জি ও চুলকানি"),
+        (r"\b(?:cough|cold|mucolytic|expectorant)\b", "সর্দি-কাশি"),
+        (r"\b(?:asthma|bronchodilator|copd|wheezing)\b", "হাঁপানি ও শ্বাসকষ্ট"),
+        (r"\b(?:diabetes|diabetic|hypoglycemic|blood sugar|glucose)\b", "ডায়াবেটিস ও রক্তের শর্করা নিয়ন্ত্রণ"),
+        (r"\b(?:hypertension|blood pressure|antihypertensive)\b", "উচ্চ রক্তচাপ নিয়ন্ত্রণ"),
+        (r"\b(?:cholesterol|lipid|statin|dyslipidemia)\b", "কোলেস্টেরল নিয়ন্ত্রণ"),
+        (r"\b(?:fungal|antifungal|candidiasis|ringworm|tinea)\b", "ছত্রাকজনিত সংক্রমণ"),
+        (r"\b(?:viral|antiviral|herpes)\b", "ভাইরাসজনিত সংক্রমণ"),
+        (r"\b(?:ulcer|acidity|gastritis|gerd|reflux|heartburn|antacid)\b", "গ্যাস্ট্রিক ও অ্যাসিডিটি"),
+        (r"\b(?:diarrh(?:o)?ea|dysentery|amoebiasis)\b", "ডায়রিয়া ও পেটের সংক্রমণ"),
+        (r"\b(?:constipation|laxative)\b", "কোষ্ঠকাঠিন্য"),
+        (r"\b(?:nausea|vomiting|antiemetic)\b", "বমি ও বমি বমি ভাব"),
+        (r"\b(?:vitamin|mineral|calcium|iron|zinc|anemia|anaemia|supplement)\b", "ভিটামিন ও পুষ্টির ঘাটতি পূরণ"),
+        (r"\b(?:anxiety|insomnia|depression|seizure|epilepsy)\b", "স্নায়বিক বা মানসিক সমস্যা"),
+    ):
+        if re.search(pat, ind_combined):
+            purpose_tags.append(bn_label)
+            if len(purpose_tags) >= 3:
+                break
+    if purpose_tags:
+        return f"এটি মূলত {', '.join(purpose_tags)}-এর চিকিৎসায় ব্যবহৃত হয়।"
+    return "এটি চিকিৎসকের নির্ধারিত নির্দিষ্ট রোগের উপসর্গ নিয়ন্ত্রণে ব্যবহৃত হয়।"
+
+
+_SIDE_EFFECT_MAP_BN: Tuple[Tuple[str, str], ...] = (
+    (r"\bnausea\b", "বমি বমি ভাব"),
+    (r"\bvomit(?:ing)?\b", "বমি"),
+    (r"\bheadache\b", "মাথাব্যথা"),
+    (r"\b(?:dizziness|vertigo|lightheaded(?:ness)?)\b", "মাথা ঘোরা"),
+    (r"\b(?:drowsiness|somnolence|sedation|sleepiness)\b", "ঘুম বা তন্দ্রাভাব"),
+    (r"\b(?:abdominal\s+pain|stomach\s+pain|epigastric\s+pain|gastric\s+pain|abdominal\s+discomfort)\b", "পেট ব্যথা"),
+    (r"\b(?:dyspepsia|indigestion|heartburn|acid\s+reflux|gastritis)\b", "গ্যাস্ট্রিক বা বুকজ্বালা"),
+    (r"\bdiarrh(?:o)?ea\b", "পাতলা পায়খানা"),
+    (r"\bconstipation\b", "কোষ্ঠকাঠিন্য"),
+    (r"\b(?:rash|skin\s+eruption|urticaria)\b", "ত্বকে র‍্যাশ বা ফুসকুড়ি"),
+    (r"\b(?:pruritus|itching)\b", "চুলকানি"),
+    (r"\b(?:allergic|hypersensitivity|anaphylaxis)\b", "অ্যালার্জি"),
+    (r"\bdry\s+mouth\b", "মুখ শুকিয়ে যাওয়া"),
+    (r"\b(?:fatigue|tiredness|weakness|asthenia)\b", "ক্লান্তি বা দুর্বলতা"),
+    (r"\b(?:edema|oedema|swelling)\b", "পায়ে বা শরীরে পানি জমা"),
+    (r"\b(?:peptic\s+ulcer|gastrointestinal\s+bleeding|gi\s+bleeding|ulceration)\b", "পেটে আলসার বা রক্তপাতের ঝুঁকি"),
+    (r"\binsomnia\b", "অনিদ্রা"),
+    (r"\bhypotension\b", "রক্তচাপ কমে যাওয়া"),
+    (r"\b(?:palpitations?|tachycardia)\b", "বুক ধড়ফড় করা"),
+    (r"\bweight\s+gain\b", "ওজন বৃদ্ধি"),
+    (r"\b(?:blurred\s+vision|visual\s+disturbance)\b", "চোখে ঝাপসা দেখা"),
+    (r"\btinnitus\b", "কানে ভোঁ ভোঁ শব্দ"),
+    (r"\b(?:flatulence|bloating)\b", "পেট ফাঁপা"),
+    (r"\b(?:anorexia|loss\s+of\s+appetite)\b", "ক্ষুধামন্দা"),
+    (r"\bcough\b", "শুষ্ক কাশি"),
+    (r"\btremor\b", "হাত-পা কাঁপা"),
+    (r"\b(?:hepatotoxicity|liver|jaundice)\b", "লিভারের সমস্যা"),
+    (r"\b(?:renal|kidney)\b", "কিডনির সমস্যা"),
+)
+
+_INTERACTION_MAP_BN: Tuple[Tuple[str, str], ...] = (
+    (r"\b(?:warfarin|anticoagulants?|blood\s+thinner)\b", "রক্ত পাতলা করার ওষুধ (যেমন Warfarin)"),
+    (r"\b(?:aspirin|nsaids?|ibuprofen|diclofenac|naproxen|ketorolac)\b", "অন্যান্য ব্যথানাশক বা Aspirin"),
+    (r"\b(?:antihypertensives?|ace\s+inhibitors?|diuretics?|beta[\s-]blockers?|furosemide|losartan)\b", "উচ্চ রক্তচাপ বা প্রস্রাব বাড়ানোর ওষুধ"),
+    (r"\b(?:corticosteroids?|steroids?|prednisolone)\b", "স্টেরয়েড জাতীয় ওষুধ"),
+    (r"\bmethotrexate\b", "Methotrexate"),
+    (r"\blithium\b", "Lithium"),
+    (r"\bdigoxin\b", "Digoxin"),
+    (r"\b(?:cyclosporine|ciclosporin|tacrolimus)\b", "Cyclosporine জাতীয় ওষুধ"),
+    (r"\b(?:ssris?|antidepressants?|fluoxetine|sertraline)\b", "মানসিক অবসাদের ওষুধ"),
+    (r"\balcohol\b", "অ্যালকোহল"),
+    (r"\b(?:sedatives?|benzodiazepines?|opioids?|cns\s+depressants?)\b", "ঘুম বা স্নায়ু শিথিল করার ওষুধ"),
+    (r"\b(?:antacids?|sucralfate)\b", "অ্যান্টাসিড"),
+    (r"\b(?:clopidogrel|antiplatelets?)\b", "রক্ত জমাট বাঁধা প্রতিরোধী ওষুধ (যেমন Clopidogrel)"),
+    (r"\b(?:phenytoin|carbamazepine|antiepileptics?)\b", "খিঁচুনির ওষুধ"),
+    (r"\b(?:sulfonylureas?|oral\s+hypoglycemics?|insulin|metformin)\b", "ডায়াবেটিসের ওষুধ"),
+    (r"\bprobenecid\b", "Probenecid"),
+    (r"\b(?:rifampicin|erythromycin|clarithromycin|ciprofloxacin|quinolones?|antibiotics?)\b", "কিছু অ্যান্টিবায়োটিক"),
+)
+
+_WARNING_MAP_BN: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
+    (r"\b(?:renal|kidney)\b", "কিডনি রোগ", ("কিডনি", "kidney", "renal")),
+    (r"\b(?:hepatic|liver|cirrhosis)\b", "লিভার রোগ", ("লিভার", "liver", "hepatic")),
+    (r"\b(?:ulcer|gastrointestinal\s+bleeding|gi\s+bleeding|gastric\s+bleeding)\b", "পেপটিক আলসার বা পেটে রক্তপাত", ("আলসার", "গ্যাস্ট্রিক", "ulcer")),
+    (r"\b(?:asthma|bronchospasm)\b", "হাঁপানি (অ্যাজমা)", ("হাঁপানি", "অ্যাজমা", "asthma")),
+    (r"\b(?:heart\s+failure|cardiovascular|cardiac|hypertension|ischemic)\b", "হৃদরোগ বা উচ্চ রক্তচাপ", ("হার্ট", "হৃদরোগ", "রক্তচাপ", "heart", "pressure")),
+    (r"\b(?:hypersensitivity|allergy|allergic)\b", "ওষুধে অ্যালার্জি", ("অ্যালার্জি", "এলার্জি", "allergy")),
+    (r"\b(?:driving|machinery|drowsiness|sedation)\b", "সেবনের পর গাড়ি চালানো বা ঝুঁকিপূর্ণ কাজ", ("গাড়ি", "গাড়ি", "driving", "ঘুম")),
+    (r"\balcohol\b", "অ্যালকোহল পান", ("অ্যালকোহল", "alcohol")),
+    (r"\b(?:elderly|geriatric)\b", "বয়স্ক রোগী", ("বয়স্ক", "বৃদ্ধ", "elderly")),
+    (r"\b(?:bleeding|coagulation|hemorrhage)\b", "রক্তক্ষরণের সমস্যা", ("রক্তপাত", "bleeding")),
+)
+
+
+def _extract_dosage_guidance_bn(
+    med: MedicineInfo,
+    dosage_form: str,
+    question: str = "",
+    include_meal_timing: bool = True,
+) -> str:
+    """
+    Returns concise, 100% Bangla administration & dosing guidance strictly grounded in
+    `medicines.db`: never leaks raw English paragraphs or disease lists.
+    """
+    non_oral = _get_non_oral_route_rule(dosage_form)
+    if non_oral:
+        return non_oral
+
+    form_low = (dosage_form or "tablet").strip().lower()
+    gen_low = (med.generic or "").lower()
+    cls_low = (med.drug_class or "").lower()
+    dose_safe = _extract_form_safe_dosage_snippet(med.dosage_description, dosage_form, max_len=400).lower()
+
+    # Extract frequency in Bangla from dosage_description
+    freq_bn = ""
+    if re.search(r"\b(?:once\s+or\s+twice|1\s*(?:to|-|–)\s*2\s*times)\b", dose_safe):
+        freq_bn = "দিনে ১ থেকে ২ বার"
+    elif re.search(r"\b(?:two\s+to\s+three|2\s*(?:to|-|–)\s*3\s*times)\b", dose_safe):
+        freq_bn = "দিনে ২ থেকে ৩ বার"
+    elif re.search(r"\b(?:three\s+to\s+four|3\s*(?:to|-|–)\s*4\s*times|every\s+4\s*(?:to|-|–)\s*6\s*hours)\b", dose_safe):
+        freq_bn = "দিনে ৩ থেকে ৪ বার (৪ থেকে ৬ ঘণ্টা পরপর)"
+    elif re.search(r"\b(?:twice\s+daily|twice\s+a\s+day|two\s+divided\s+doses|every\s+12\s*hours|12\s*hourly|b\.?i\.?d\.?)\b", dose_safe):
+        freq_bn = "দিনে ২ বার"
+    elif re.search(r"\b(?:three\s+times\s+daily|thrice\s+daily|three\s+divided\s+doses|every\s+8\s*hours|8\s*hourly|t\.?i\.?d\.?)\b", dose_safe):
+        freq_bn = "দিনে ৩ বার"
+    elif re.search(r"\b(?:four\s+times\s+daily|every\s+6\s*hours|6\s*hourly|q\.?i\.?d\.?)\b", dose_safe):
+        freq_bn = "দিনে ৪ বার"
+    elif re.search(r"\b(?:once\s+daily|once\s+a\s+day|every\s+24\s*hours|single\s+daily\s+dose|o\.?d\.?)\b", dose_safe):
+        freq_bn = "দিনে ১ বার"
+
+    if any(k in form_low for k in ("syrup", "suspension", "elixir", "solution")):
+        freq_part = f"সাধারণত {freq_bn} " if freq_bn else ""
+        return (
+            f"ব্যবহারের আগে বোতল ভালোভাবে ঝাঁকিয়ে নিন এবং {freq_part}"
+            "চিকিৎসকের নির্ধারিত মাপনি চামচ বা ড্রপার অনুযায়ী খাবারের পরে সেবন করুন।"
+        )
+
+    if any(k in gen_low for k in _PPI_GENERICS):
+        f_txt = freq_bn or "দিনে ১ থেকে ২ বার"
+        if not include_meal_timing:
+            return f"সাধারণত {f_txt} চিবিয়ে বা না ভেঙে পুরোটা পানি দিয়ে গিলে খাবেন; চিকিৎসকের নির্ধারিত মাত্রা মেনে চলুন।"
+        return f"সাধারণত {f_txt} খাবারের ৩০ মিনিট আগে খালি পেটে পানি দিয়ে গিলে খাবেন (চিবিয়ে বা ভেঙে খাবেন না)।"
+
+    if any(k in gen_low for k in _NSAID_GENERICS):
+        f_txt = freq_bn or "দিনে ১ থেকে ২ বার"
+        if not include_meal_timing:
+            return f"সাধারণত {f_txt} চিকিৎসকের নির্ধারিত মাত্রায় পানি দিয়ে গিলে খাবেন।"
+        return f"সাধারণত {f_txt} (চিকিৎসকের নির্ধারিত মাত্রায়) গ্যাস্ট্রিক এড়াতে অবশ্যই খাবারের পরে ভরা পেটে পানি দিয়ে গিলে খাবেন।"
+
+    if "paracetamol" in gen_low:
+        f_txt = freq_bn or "দিনে ৩ থেকে ৪ বার (৪ থেকে ৬ ঘণ্টা পরপর)"
+        if not include_meal_timing:
+            return f"প্রাপ্তবয়স্কদের জন্য সাধারণত ১টি করে {f_txt} পানি দিয়ে খাবেন (চিকিৎসকের নির্ধারিত মাত্রা মেনে চলুন)।"
+        return f"প্রাপ্তবয়স্কদের জন্য সাধারণত ১টি করে {f_txt} খাবারের পরে (ভরা পেটে) পানি দিয়ে খাবেন।"
+
+    if any(k in gen_low for k in _BEDTIME_SEDATIVE_GENERICS):
+        if not include_meal_timing:
+            return "চিকিৎসকের নির্ধারিত মাত্রায় পানি দিয়ে গিলে খাবেন; নিজে থেকে মাত্রা বাড়াবেন না।"
+        return "এটি সাধারণত রাতে ঘুমানোর আগে চিকিৎসকের নির্ধারিত মাত্রায় পানি দিয়ে খেতে হয়।"
+
+    if any(k in gen_low for k in _ANTIHYPERTENSIVE_GENERICS):
+        f_txt = freq_bn or "দিনে ১ বার"
+        if not include_meal_timing:
+            return f"সাধারণত {f_txt} প্রতিদিন একই সময়ে নিয়মিত পানি দিয়ে খাবেন।"
+        return f"সাধারণত {f_txt} প্রতিদিন নির্দিষ্ট সময়ে (সকালে) খাবারের আগে বা পরে পানি দিয়ে নিয়মিত খাবেন।"
+
+    if any(k in cls_low for k in ("antibiotic", "penicillin", "cephalosporin", "macrolide")):
+        f_txt = freq_bn or "নির্দিষ্ট সময় পরপর"
+        return f"চিকিৎসকের নির্ধারিত মাত্রায় {f_txt} পানি দিয়ে খাবেন এবং সুস্থ বোধ করলেও পুরো কোর্স শেষ করবেন।"
+
+    if not include_meal_timing:
+        if freq_bn:
+            return f"সাধারণত {freq_bn} চিকিৎসকের নির্ধারিত মাত্রায় পানি দিয়ে গিলে খাবেন।"
+        return "চিকিৎসকের নির্ধারিত মাত্রা ও সময়সীমা মেনে পানি দিয়ে গিলে খাবেন।"
+
+    meal_bn = _extract_meal_timing_bn(med, dosage_form, question)
+    if freq_bn:
+        return f"সাধারণত {freq_bn} চিকিৎসকের নির্ধারিত মাত্রায় খেতে হয়। {meal_bn}"
+    return f"{meal_bn} চিকিৎসকের নির্ধারিত মাত্রা ও সময়সীমা মেনে খাবেন।"
+
+
+def _extract_side_effects_bn(med: MedicineInfo, question: str = "") -> str:
+    """Returns concise 100% Bangla side effects extracted from `med.side_effects_description`."""
+    raw = _clean_db_snippet(med.side_effects_description, max_len=600).lower()
+    found: List[str] = []
+    for pat, bn_label in _SIDE_EFFECT_MAP_BN:
+        if raw and re.search(pat, raw):
+            if bn_label not in found:
+                found.append(bn_label)
+            if len(found) >= 6:
+                break
+
+    if found:
+        return (
+            f"এর সম্ভাব্য পার্শ্বপ্রতিক্রিয়ার মধ্যে রয়েছে: {', '.join(found)}। "
+            "তীব্র কোনো সমস্যা বা অ্যালার্জি দেখা দিলে দ্রুত চিকিৎসকের পরামর্শ নিন।"
+        )
+
+    return (
+        "এর নির্দিষ্ট সাধারণ পার্শ্বপ্রতিক্রিয়ার তালিকা ডাটাবেসে বিস্তারিত নেই; "
+        "তবে বমি ভাব, ত্বকে র‍্যাশ, অ্যালার্জি বা অস্বাভাবিক কোনো উপসর্গ দেখা দিলে চিকিৎসকের পরামর্শ নিন।"
+    )
+
+
+def _extract_pregnancy_lactation_bn(med: MedicineInfo, question: str = "") -> str:
+    """Returns concise 100% Bangla pregnancy/lactation guidance grounded in `medicines.db`."""
+    raw = _clean_db_snippet(med.pregnancy_and_lactation_description, max_len=600).lower()
+    q_low = (question or "").strip().lower()
+    asks_preg = any(k in q_low for k in ("গর্ভাবস্থ", "গর্ভবতী", "প্রেগন্যান্ট", "প্রেগনেন্ট", "বাচ্চা পেটে", "pregnant", "pregnancy"))
+    asks_lact = any(k in q_low for k in ("স্তন্যদান", "বুকের দুধ", "দুধ খাওয়ানো", "দুধ খাওয়ানো", "lactation", "breastfeed", "nursing"))
+
+    if not raw:
+        return "গর্ভাবস্থা বা স্তন্যদান সংক্রান্ত নির্দিষ্ট তথ্য ডাটাবেসে নেই; চিকিৎসকের পরামর্শ ছাড়া এ সময়ে এটি গ্রহণ করবেন না।"
+
+    is_avoid_preg = bool(
+        re.search(
+            r"\b(?:contraindicated|avoid(?:ed)?|not\s+recommended|category\s+[dx]|third\s+trimester|3rd\s+trimester|teratogenic)\b",
+            raw,
+        )
+    )
+    is_caution_preg = bool(
+        re.search(r"\b(?:category\s+c|caution|benefit\s+outweighs|only\s+if\s+clearly\s+needed|should\s+be\s+used\s+only)\b", raw)
+    )
+    is_safer_preg = bool(re.search(r"\b(?:category\s+[ab]|no\s+evidence\s+of\s+harm|generally\s+safe)\b", raw))
+
+    is_avoid_lact = bool(
+        re.search(
+            r"(?:lactat|breast\s*milk|nursing)[^.]{0,120}\b(?:avoid|not\s+recommended|contraindicated|discontinue|caution)\b"
+            r"|\b(?:avoid|not\s+recommended|contraindicated)\b[^.]{0,120}(?:lactat|breast\s*milk|nursing)",
+            raw,
+        )
+    )
+    is_excreted_milk = bool(re.search(r"\b(?:excreted|secreted|passes)\b[^.]{0,60}(?:breast\s*milk|human\s+milk)", raw))
+
+    parts: List[str] = []
+    if asks_preg or not asks_lact:
+        if is_avoid_preg:
+            if "third trimester" in raw or "3rd trimester" in raw:
+                parts.append("গর্ভাবস্থায় (বিশেষ করে শেষ তিন মাসে) এটি এড়িয়ে চলা উচিত এবং চিকিৎসকের অনুমতি ছাড়া খাওয়া নিরাপদ নয়।")
+            else:
+                parts.append("গর্ভাবস্থায় এটি সাধারণত এড়িয়ে চলার পরামর্শ দেওয়া হয়; চিকিৎসকের সরাসরি অনুমতি ছাড়া খাবেন না।")
+        elif is_caution_preg:
+            parts.append("গর্ভাবস্থায় কেবল চিকিৎসক একান্ত প্রয়োজন মনে করলেই এটি ব্যবহার করা উচিত।")
+        elif is_safer_preg:
+            parts.append("গর্ভাবস্থায় এটি তুলনামূলকভাবে কম ঝুঁকিপূর্ণ হিসেবে বিবেচিত হলেও চিকিৎসকের পরামর্শ নিয়েই ব্যবহার করতে হবে।")
+        else:
+            parts.append("গর্ভাবস্থায় এটি গ্রহণের আগে অবশ্যই চিকিৎসকের অনুমতি নিতে হবে।")
+
+    if asks_lact or not asks_preg:
+        if is_avoid_lact:
+            parts.append("স্তন্যদানকালে (বুকের দুধ খাওয়ানোর সময়) এটি এড়িয়ে চলা উচিত অথবা চিকিৎসকের পরামর্শ নেওয়া জরুরি।")
+        elif is_excreted_milk:
+            parts.append("এর সামান্য অংশ বুকের দুধে নিঃসৃত হতে পারে, তাই স্তন্যদানকালে চিকিৎসকের পরামর্শ নিয়ে ব্যবহার করুন।")
+        elif asks_lact:
+            parts.append("স্তন্যদানকালে ব্যবহারের আগে চিকিৎসকের পরামর্শ নেওয়া নিরাপদ।")
+
+    return " ".join(parts)
+
+
+def _extract_interactions_bn(
+    med: MedicineInfo,
+    relevant_alerts: Sequence[SafetyAlert],
+    question: str = "",
+) -> str:
+    """Returns concise 100% Bangla drug interaction guidance grounded in `medicines.db`."""
+    raw = _clean_db_snippet(med.interaction_description, max_len=600).lower()
+    found: List[str] = []
+    for pat, bn_label in _INTERACTION_MAP_BN:
+        if raw and re.search(pat, raw):
+            if bn_label not in found:
+                found.append(bn_label)
+            if len(found) >= 4:
+                break
+
+    if found:
+        return (
+            f"এটি {', '.join(found)}-এর সাথে বিক্রিয়া করতে পারে; "
+            "তাই এসব ওষুধের সাথে একসাথে খাওয়ার আগে অবশ্যই চিকিৎসকের পরামর্শ নিন।"
+        )
+    if relevant_alerts:
+        return "উপরের নিরাপত্তা সতর্কতা মেনে চলুন এবং একসাথে খাওয়ার আগে চিকিৎসকের পরামর্শ নিন।"
+    return (
+        "স্ক্যানকৃত ওষুধগুলোর মধ্যে কোনো গুরুতর বিক্রিয়া শনাক্ত হয়নি; "
+        "তবে অন্য কোনো নিয়মিত ওষুধের সাথে একসাথে নেওয়ার আগে চিকিৎসক বা ফার্মাসিস্টের পরামর্শ নিন।"
+    )
+
+
+def _extract_storage_bn(med: MedicineInfo) -> str:
+    """Returns concise 100% Bangla storage instructions grounded in `medicines.db`."""
+    raw = _clean_db_snippet(med.storage_conditions_description, max_len=400).lower()
+    if not raw:
+        return "শুষ্ক ও ঠান্ডা স্থানে, সরাসরি রোদ ও আর্দ্রতা থেকে দূরে এবং শিশুদের নাগালের বাইরে সংরক্ষণ করুন।"
+
+    if re.search(r"\b(?:2\s*(?:to|-|–)\s*8|refrigerat)\b", raw):
+        temp_part = "ফ্রিজে (২° থেকে ৮° সেলসিয়াস তাপমাত্রায়, তবে ডিপ ফ্রিজে নয়)"
+    elif re.search(r"\b(?:below\s+25|not\s+above\s+25|25\s*°?\s*c)\b", raw):
+        temp_part = "২৫° সেলসিয়াসের নিচে শুষ্ক ও ঠান্ডা স্থানে"
+    elif re.search(r"\b(?:below\s+30|not\s+above\s+30|30\s*°?\s*c)\b", raw):
+        temp_part = "৩০° সেলসিয়াসের নিচে শুষ্ক ও ঠান্ডা স্থানে"
+    else:
+        temp_part = "শুষ্ক ও ঠান্ডা স্থানে"
+
+    has_light = bool(re.search(r"\b(?:light|sunlight)\b", raw))
+    has_moisture = bool(re.search(r"\bmoisture\b", raw))
+    if has_light and has_moisture:
+        away_part = "সরাসরি আলো ও আর্দ্রতা থেকে দূরে এবং শিশুদের নাগালের বাইরে"
+    elif has_light:
+        away_part = "সরাসরি আলো থেকে দূরে এবং শিশুদের নাগালের বাইরে"
+    elif has_moisture:
+        away_part = "আর্দ্রতা থেকে দূরে এবং শিশুদের নাগালের বাইরে"
+    else:
+        away_part = "সরাসরি রোদ থেকে দূরে এবং শিশুদের নাগালের বাইরে"
+    return f"এটি {temp_part}, {away_part} সংরক্ষণ করুন।"
+
+
+def _extract_warnings_bn(med: MedicineInfo, dosage_form: str, question: str = "") -> str:
+    """Returns concise 100% Bangla precautions/contraindications grounded in `medicines.db`."""
+    raw = (
+        f"{_clean_db_snippet(med.precautions_description, max_len=450)} "
+        f"{_clean_db_snippet(med.contraindications_description, max_len=350)}"
+    ).lower()
+    q_low = (question or "").strip().lower()
+
+    matched_specific: List[str] = []
+    found_all: List[str] = []
+    for pat, bn_label, q_triggers in _WARNING_MAP_BN:
+        if raw and re.search(pat, raw):
+            if bn_label not in found_all:
+                found_all.append(bn_label)
+            if any(t in q_low for t in q_triggers) and bn_label not in matched_specific:
+                matched_specific.append(bn_label)
+
+    if matched_specific:
+        return (
+            f"সতর্কতা: {', '.join(matched_specific)}-এর ক্ষেত্রে এটি ঝুঁকিপূর্ণ হতে পারে; "
+            "তাই ব্যবহারের আগে অবশ্যই চিকিৎসকের পরামর্শ নিন।"
+        )
+    if found_all:
+        return (
+            f"সতর্কতা: {', '.join(found_all[:5])} থাকলে চিকিৎসকের পরামর্শ ছাড়া এটি ব্যবহার করবেন না।"
+        )
+    return (
+        "সতর্কতা: দীর্ঘমেয়াদী কোনো রোগ (যেমন কিডনি, লিভার বা হৃদরোগ), অ্যালার্জি বা অন্য ওষুধ চলমান থাকলে "
+        "ব্যবহারের আগে অবশ্যই চিকিৎসকের পরামর্শ নিন।"
+    )
 
 
 def _call_local_slm_caregiver_qa(
@@ -1092,7 +1452,7 @@ def _call_local_slm_caregiver_qa(
     )
     alert_sig = tuple((a.alert_type, a.generic_or_class) for a in relevant_alerts)
     cache_key = (
-        "qa_v2",
+        "qa_v3",
         re.sub(r"\s+", " ", (question or "").strip().lower()),
         json.dumps(list(intents), ensure_ascii=False),
         json.dumps(strip_sig, ensure_ascii=False),
@@ -1133,34 +1493,41 @@ def _call_local_slm_caregiver_qa(
         fields: List[Tuple[str, Optional[str], int]] = [
             ("ওষুধের নাম", med.brand_name, 100),
         ]
-        if strength and (not intent_set or "dosage" in intent_set or "ingredients" in intent_set):
+        if strength and ("ingredients" in intent_set):
             fields.append(("মাত্রা", strength, 100))
-        if non_oral_rule or "dosage" in intent_set or "meal_timing" in intent_set or "ingredients" in intent_set:
+        if non_oral_rule or "ingredients" in intent_set:
             fields.append(("ধরন", dosage_form, 80))
-        if "ingredients" in intent_set or "interactions_duplicates" in intent_set or not intent_set:
+        if "ingredients" in intent_set or "interactions_duplicates" in intent_set:
             fields.append(("জেনেরিক উপাদান", med.generic, 180))
-        if "ingredients" in intent_set or "purpose" in intent_set:
+        if "ingredients" in intent_set:
             fields.append(("ওষুধের শ্রেণি", med.drug_class, 120))
         if "purpose" in intent_set or not intent_set:
-            fields.append(("ব্যবহারের নির্দেশনা", med.indication, _lim(220)))
-            fields.append(("বিস্তারিত নির্দেশনা", med.indication_description, _lim(240)))
+            fields.append(("কাজ", _extract_concise_purpose_bn(med), _lim(260)))
         if "meal_timing" in intent_set:
-            fields.append(("খাওয়ার সময়ের নির্দেশিকা", _extract_meal_timing_bn(med, dosage_form, question), 260))
+            fields.append(("খাওয়ার সময়", _extract_meal_timing_bn(med, dosage_form, question), 260))
         if "dosage" in intent_set:
-            dose_safe = _extract_form_safe_dosage_snippet(med.dosage_description, dosage_form, max_len=_lim(320))
-            if dose_safe:
-                fields.append(("সেবনবিধি ও মাত্রা", dose_safe, _lim(320)))
+            fields.append(
+                (
+                    "খাওয়ার নিয়ম ও মাত্রা",
+                    _extract_dosage_guidance_bn(
+                        med,
+                        dosage_form,
+                        question=question,
+                        include_meal_timing=("meal_timing" not in intent_set),
+                    ),
+                    _lim(300),
+                )
+            )
         if "side_effects" in intent_set:
-            fields.append(("পার্শ্বপ্রতিক্রিয়া", med.side_effects_description, _lim(280)))
+            fields.append(("পার্শ্বপ্রতিক্রিয়া", _extract_side_effects_bn(med, question), _lim(280)))
         if "interactions_duplicates" in intent_set:
-            fields.append(("অন্য ওষুধের সাথে বিক্রিয়া", med.interaction_description, _lim(280)))
+            fields.append(("অন্য ওষুধের সাথে বিক্রিয়া", _extract_interactions_bn(med, relevant_alerts, question), _lim(280)))
         if "pregnancy_lactation" in intent_set:
-            fields.append(("গর্ভাবস্থা ও স্তন্যদান", med.pregnancy_and_lactation_description, _lim(280)))
+            fields.append(("গর্ভাবস্থা ও স্তন্যদান", _extract_pregnancy_lactation_bn(med, question), _lim(280)))
         if "warnings_precautions" in intent_set:
-            fields.append(("সতর্কতা", med.precautions_description, _lim(260)))
-            fields.append(("নিষেধাজ্ঞা", med.contraindications_description, _lim(240)))
+            fields.append(("সতর্কতা ও নিষেধাজ্ঞা", _extract_warnings_bn(med, dosage_form, question), _lim(280)))
         if "storage" in intent_set:
-            fields.append(("সংরক্ষণ", med.storage_conditions_description, _lim(220)))
+            fields.append(("সংরক্ষণ", _extract_storage_bn(med), _lim(240)))
 
         for label, val, limit in fields:
             clean = _clean_db_snippet(val, max_len=limit)
@@ -1272,6 +1639,52 @@ def _call_local_slm_caregiver_qa(
 _SUMMARY_BOILERPLATE_RE = re.compile(
     r"(?:হলো\s+একটি|যার\s+মূল\s+সক্রিয়\s+উপাদান|যার\s+মূল\s+সক্রিয়\s+উপাদান)"
 )
+_ALLOWED_SHORT_EN_TOKENS = {
+    "mg", "mcg", "ml", "gm", "g", "iu", "nsaid", "ocd", "bp", "c", "iv", "im",
+    "warfarin", "aspirin", "methotrexate", "lithium", "digoxin", "cyclosporine",
+    "clopidogrel", "probenecid", "ssri", "ssris",
+}
+
+
+def _has_english_prose_leak(answer: str, focused_strips: Sequence[StripScanResult]) -> bool:
+    """
+    Returns True if `answer` contains leaked English prose (e.g., 3+ consecutive English words
+    that are not brand/generic names or medical units, or excessive Latin letters).
+    """
+    if not answer:
+        return False
+    allowed: Set[str] = set(_ALLOWED_SHORT_EN_TOKENS)
+    for strip in focused_strips:
+        med = strip.matched_medicine
+        if not med:
+            continue
+        for field in (med.brand_name, med.generic, med.dosage_form):
+            for tok in re.findall(r"[a-z]+", (field or "").lower()):
+                allowed.add(tok)
+
+    # Check for runs of >= 3 consecutive disallowed English words
+    run_len = 0
+    for token in re.findall(r"[A-Za-z]+|[\u0980-\u09FF]+|[।.!?\n]", answer):
+        if token[0].isascii() and token.isalpha():
+            if token.lower() not in allowed:
+                run_len += 1
+                if run_len >= 3:
+                    return True
+            else:
+                run_len = 0
+        else:
+            run_len = 0
+
+    # Check overall Latin-to-Bangla ratio after stripping allowed brand/generic words
+    bn_chars = len(re.findall(r"[\u0980-\u09FF]", answer))
+    disallowed_latin_chars = sum(
+        len(tok)
+        for tok in re.findall(r"[A-Za-z]+", answer)
+        if tok.lower() not in allowed
+    )
+    if disallowed_latin_chars >= 20 and disallowed_latin_chars > bn_chars * 0.25:
+        return True
+    return False
 
 
 def _is_slm_qa_answer_clinically_valid(
@@ -1283,9 +1696,9 @@ def _is_slm_qa_answer_clinically_valid(
 ) -> bool:
     """
     Post-generation clinical & conciseness grounding validator for 1B SLM caregiver Q&A output.
-    Rejects memorized summary-template regurgitation, unsolicited warning dumps, meal/morning-night
-    timing contradictions, missing multi-strip coverage, or off-topic replies so the deterministic
-    grounded Bangla engine answers concisely and safely instead.
+    Rejects memorized summary-template regurgitation, leaked English prose, unsolicited ingredient
+    or warning dumps, meal/morning-night timing contradictions, missing multi-strip coverage, or
+    off-topic replies so the deterministic grounded Bangla engine answers concisely and safely instead.
     """
     if not answer or not focused_strips:
         return False
@@ -1293,11 +1706,14 @@ def _is_slm_qa_answer_clinically_valid(
     q_low = (question or "").strip().lower()
     intent_set = set(intents)
 
-    # 0. Reject memorized full-summary boilerplate ("X হলো একটি ট্যাবলেট, যার মূল সক্রিয় উপাদান Y...")
+    # 0. Reject English prose leaks and memorized full-summary boilerplate
+    if _has_english_prose_leak(answer, focused_strips):
+        return False
     if _SUMMARY_BOILERPLATE_RE.search(answer):
         return False
-    if "ingredients" not in intent_set and ("মূল সক্রিয় উপাদান" in answer or "মূল সক্রিয় উপাদান" in answer):
-        return False
+    if "ingredients" not in intent_set and "interactions_duplicates" not in intent_set:
+        if any(k in answer for k in ("মূল সক্রিয় উপাদান", "মূল সক্রিয় উপাদান", "জেনেরিক উপাদান", "উপাদান হলো", "উপাদান রয়েছে", "উপাদান রয়েছে")):
+            return False
 
     # Reject unsolicited 'সতর্কতা:' block when warnings/interactions/pregnancy were not asked
     # (unless a high-severity alert or non-oral route warning justified it).
@@ -1517,14 +1933,14 @@ def _build_deterministic_caregiver_answer(
             parts.append(timing_bn)
 
         if "dosage" in intents:
-            if non_oral_rule and non_oral_rule not in parts:
-                parts.append(non_oral_rule)
-            dose_snip = _extract_form_safe_dosage_snippet(med.dosage_description, d_form, max_len=200)
-            if dose_snip:
-                parts.append(f"ডাটাবেস অনুযায়ী মাত্রা/সেবনবিধি: {dose_snip}")
-            elif "meal_timing" not in intents:
-                parts.append(_extract_meal_timing_bn(med, d_form, question))
-            parts.append("চিকিৎসকের নির্ধারিত মাত্রা ও সময়সীমা মেনে ব্যবহার করুন।")
+            dosage_bn = _extract_dosage_guidance_bn(
+                med,
+                d_form,
+                question=question,
+                include_meal_timing=("meal_timing" not in intents),
+            )
+            if dosage_bn and dosage_bn not in parts:
+                parts.append(dosage_bn)
 
         if "purpose" in intents:
             parts.append(_extract_concise_purpose_bn(med))
@@ -1532,63 +1948,24 @@ def _build_deterministic_caregiver_answer(
         if "ingredients" in intents:
             strength = (strip.extracted_strength or med.package_container or "").strip()
             str_part = f" ({strength})" if strength else ""
-            cls_part = f", শ্রেণি: {med.drug_class}" if med.drug_class else ""
-            parts.append(f"এর মূল জেনেরিক উপাদান হলো {med.generic}{str_part}{cls_part}।")
+            parts.append(f"এর মূল জেনেরিক উপাদান হলো {med.generic}{str_part}।")
 
         if "side_effects" in intents:
-            se_snip = _clean_db_snippet(med.side_effects_description, max_len=220)
-            if se_snip:
-                parts.append(f"সম্ভাব্য পার্শ্বপ্রতিক্রিয়া: {se_snip}")
-            else:
-                parts.append(
-                    "এর নির্দিষ্ট পার্শ্বপ্রতিক্রিয়ার তালিকা ডাটাবেসে উল্লেখ নেই; "
-                    "তবে অ্যালার্জি বা অস্বাভাবিক কোনো উপসর্গ দেখা দিলে চিকিৎসকের পরামর্শ নিন।"
-                )
+            parts.append(_extract_side_effects_bn(med, question))
 
         if "pregnancy_lactation" in intents:
-            preg_snip = _clean_db_snippet(med.pregnancy_and_lactation_description, max_len=220)
-            if preg_snip:
-                parts.append(
-                    f"গর্ভাবস্থা ও স্তন্যদানকালে: {preg_snip} "
-                    "ব্যবহারের আগে অবশ্যই চিকিৎসকের অনুমতি নিন।"
-                )
-            else:
-                parts.append(
-                    "গর্ভাবস্থা বা স্তন্যদান সংক্রান্ত নির্দিষ্ট তথ্য ডাটাবেসে নেই; "
-                    "চিকিৎসকের পরামর্শ ছাড়া এ সময়ে এটি গ্রহণ করবেন না।"
-                )
+            parts.append(_extract_pregnancy_lactation_bn(med, question))
 
         if "interactions_duplicates" in intents:
-            inter_snip = _clean_db_snippet(med.interaction_description, max_len=220)
-            if inter_snip:
-                parts.append(f"অন্য ওষুধের সাথে বিক্রিয়া: {inter_snip}")
-            elif not relevant_alerts:
-                parts.append(
-                    "স্ক্যানকৃত ওষুধগুলোর মধ্যে কোনো ডুপ্লিকেট বা গুরুতর বিক্রিয়া শনাক্ত হয়নি; "
-                    "তবে অন্য কোনো নিয়মিত ওষুধের সাথে একসাথে নেওয়ার আগে চিকিৎসক বা ফার্মাসিস্টের পরামর্শ নিন।"
-                )
+            parts.append(_extract_interactions_bn(med, relevant_alerts, question))
 
         if "storage" in intents:
-            stor_snip = _clean_db_snippet(med.storage_conditions_description, max_len=200)
-            if stor_snip:
-                parts.append(f"সংরক্ষণের নিয়ম: {stor_snip}")
-            else:
-                parts.append("শুষ্ক ও ঠান্ডা স্থানে, সরাসরি রোদ ও আর্দ্রতা থেকে দূরে এবং শিশুদের নাগালের বাইরে সংরক্ষণ করুন।")
+            parts.append(_extract_storage_bn(med))
 
         if "warnings_precautions" in intents:
-            prec_snip = _clean_db_snippet(med.precautions_description, max_len=200)
-            contra_snip = _clean_db_snippet(med.contraindications_description, max_len=180)
             if non_oral_rule and non_oral_rule not in parts:
                 parts.append(non_oral_rule)
-            if prec_snip:
-                parts.append(f"সতর্কতা: {prec_snip}")
-            if contra_snip:
-                parts.append(f"নিষেধাজ্ঞা: {contra_snip}")
-            if not prec_snip and not contra_snip:
-                parts.append(
-                    "সতর্কতা: দীর্ঘমেয়াদী কোনো রোগ (যেমন কিডনি, লিভার বা হৃদরোগ), অ্যালার্জি বা অন্য ওষুধ চলমান থাকলে "
-                    "ব্যবহারের আগে অবশ্যই চিকিৎসকের পরামর্শ নিন।"
-                )
+            parts.append(_extract_warnings_bn(med, d_form, question))
 
         if not parts:
             continue
